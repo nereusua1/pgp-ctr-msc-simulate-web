@@ -1,0 +1,371 @@
+<!doctype html>
+<!--
+  PROTOTYPE ONLY — 报文模拟系统视觉升级样例，不属于正式前端。
+  问题：同一套运行总览，哪种视觉与信息结构最适合“简洁、大气、科技感”的企业内部系统？
+  运行：python3 -m http.server 5184 --directory prototypes
+  访问：http://127.0.0.1:5184/ui-refinement-prototype.html?variant=a
+-->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>报文模拟系统 · UI 精致化样例</title>
+  <style>
+    :root {
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: #152036;
+      background: #eef2f8;
+      font-synthesis: none;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 320px; font-size: 14px; line-height: 1.5; }
+    button { border: 0; font: inherit; cursor: pointer; }
+    svg { display: block; }
+    .variant { display: none; min-height: 100vh; }
+    body[data-variant="a"] .variant-a,
+    body[data-variant="b"] .variant-b,
+    body[data-variant="c"] .variant-c { display: block; }
+    .icon { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; }
+    .icon.sm { width: 15px; height: 15px; }
+    .prototype-switcher {
+      position: fixed; z-index: 100; left: 50%; bottom: 18px; transform: translateX(-50%);
+      display: flex; align-items: center; gap: 8px; padding: 7px;
+      border: 1px solid #ffffff1f; border-radius: 999px; background: #101828ed; color: white;
+      box-shadow: 0 18px 50px #0b122560; backdrop-filter: blur(16px);
+    }
+    .prototype-switcher button { display: grid; width: 34px; height: 34px; place-items: center; border-radius: 50%; background: #ffffff12; color: white; }
+    .prototype-switcher button:hover { background: #ffffff26; }
+    .prototype-label { min-width: 210px; text-align: center; }
+    .prototype-label b { display: block; font-size: 12px; }
+    .prototype-label small { display: block; color: #aebbd0; font-size: 10px; }
+
+    /* A — Precision Cloud */
+    .variant-a { --a-blue: #2864f0; --a-ink: #17233b; --a-muted: #718096; --a-line: #e5eaf1; background: #f5f7fb; color: var(--a-ink); }
+    .a-sidebar {
+      position: fixed; inset: 0 auto 0 0; z-index: 20; display: flex; width: 248px; flex-direction: column;
+      padding: 24px 16px; border-right: 1px solid var(--a-line); background: #ffffffd9; backdrop-filter: blur(22px);
+    }
+    .a-brand { display: flex; align-items: center; gap: 12px; padding: 0 10px 28px; }
+    .a-brand-mark { position: relative; display: grid; width: 38px; height: 38px; place-items: center; overflow: hidden; border-radius: 12px; background: #13213b; color: white; font-weight: 750; letter-spacing: -.04em; }
+    .a-brand-mark::after { position: absolute; width: 22px; height: 22px; right: -8px; bottom: -8px; border-radius: 50%; background: #4f8cff; content: ""; }
+    .a-brand b, .a-brand small { display: block; }
+    .a-brand b { font-size: 15px; letter-spacing: -.01em; }
+    .a-brand small { margin-top: 2px; color: #92a0b5; font-size: 9px; letter-spacing: .12em; }
+    .a-nav-label { padding: 12px 12px 8px; color: #9aa6b8; font-size: 10px; font-weight: 700; letter-spacing: .11em; }
+    .a-nav button { display: flex; width: 100%; align-items: center; gap: 12px; margin: 3px 0; padding: 11px 12px; border-radius: 11px; background: transparent; color: #647188; text-align: left; transition: .18s; }
+    .a-nav button:hover { background: #f0f4fa; color: #21345a; }
+    .a-nav button.active { background: #eaf1ff; color: #2055cb; font-weight: 650; }
+    .a-nav button.active::after { width: 5px; height: 5px; margin-left: auto; border-radius: 50%; background: #2d67ed; content: ""; }
+    .a-environment { margin-top: auto; padding: 13px; border: 1px solid #e8edf4; border-radius: 14px; background: #f8fafc; }
+    .a-environment span { display: flex; align-items: center; gap: 7px; color: #536178; font-size: 12px; }
+    .a-environment span::before { width: 7px; height: 7px; border-radius: 50%; background: #2bb673; box-shadow: 0 0 0 4px #2bb67318; content: ""; }
+    .a-environment small { display: block; margin-top: 7px; color: #9aa6b8; }
+    .a-main { min-height: 100vh; margin-left: 248px; padding: 0 34px 100px; }
+    .a-topbar { display: flex; height: 72px; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--a-line); }
+    .a-breadcrumb { color: #8a97aa; font-size: 12px; }
+    .a-breadcrumb b { color: #4a5870; }
+    .a-account { display: flex; align-items: center; gap: 13px; }
+    .a-search { display: flex; width: 220px; align-items: center; gap: 8px; padding: 9px 12px; border: 1px solid #e0e6ef; border-radius: 12px; background: white; color: #95a1b4; }
+    .a-avatar { display: grid; width: 34px; height: 34px; place-items: center; border-radius: 50%; background: linear-gradient(145deg,#dfe8fb,#bdcdf1); color: #294b92; font-size: 12px; font-weight: 750; }
+    .a-content { max-width: 1440px; margin: auto; }
+    .a-hero { display: flex; align-items: flex-end; justify-content: space-between; padding: 42px 0 26px; }
+    .a-eyebrow { margin: 0 0 8px; color: #2870e8; font-size: 11px; font-weight: 750; letter-spacing: .11em; }
+    .a-hero h1 { margin: 0; font-size: 30px; font-weight: 680; letter-spacing: -.035em; }
+    .a-hero p { margin: 8px 0 0; color: var(--a-muted); }
+    .a-primary { display: flex; align-items: center; gap: 8px; padding: 11px 16px; border-radius: 12px; background: #2864f0; color: white; font-weight: 650; box-shadow: 0 7px 18px #2864f02e; }
+    .a-primary:hover { background: #1e57dc; transform: translateY(-1px); }
+    .a-metrics { display: grid; grid-template-columns: repeat(4,1fr); gap: 14px; }
+    .a-metric { position: relative; overflow: hidden; padding: 19px; border: 1px solid var(--a-line); border-radius: 17px; background: white; box-shadow: 0 4px 16px #263c6710; }
+    .a-metric::after { position: absolute; width: 72px; height: 72px; right: -30px; top: -30px; border-radius: 50%; background: var(--glow,#edf3ff); content: ""; }
+    .a-metric-head { display: flex; align-items: center; justify-content: space-between; color: #75839a; font-size: 12px; }
+    .a-metric-head i { display: grid; width: 30px; height: 30px; place-items: center; border-radius: 9px; background: var(--soft,#eef3ff); color: var(--tone,#336de8); }
+    .a-metric strong { display: block; margin: 13px 0 3px; font-size: 28px; line-height: 1; letter-spacing: -.03em; }
+    .a-metric small { color: #94a0b1; }
+    .up { color: #168a60 !important; }
+    .warn { color: #c16a16 !important; }
+    .a-grid { display: grid; grid-template-columns: minmax(0,1.65fr) minmax(290px,.7fr); gap: 16px; margin-top: 16px; }
+    .a-card { border: 1px solid var(--a-line); border-radius: 18px; background: white; box-shadow: 0 4px 16px #263c670c; }
+    .a-card-head { display: flex; align-items: center; justify-content: space-between; padding: 20px 20px 14px; }
+    .a-card h2 { margin: 0; font-size: 15px; letter-spacing: -.01em; }
+    .a-card-head button { background: transparent; color: #2c63d7; font-size: 12px; font-weight: 650; }
+    .a-table { width: 100%; border-collapse: collapse; text-align: left; }
+    .a-table th { padding: 10px 20px; border-top: 1px solid #edf0f5; border-bottom: 1px solid #edf0f5; background: #fafbfd; color: #929caf; font-size: 10px; font-weight: 700; letter-spacing: .06em; }
+    .a-table td { padding: 14px 20px; border-bottom: 1px solid #f0f2f6; color: #526077; }
+    .a-table tr:last-child td { border-bottom: 0; }
+    .a-table b { color: #20304d; font-weight: 650; }
+    .a-table small { display: block; color: #98a3b4; }
+    .pill { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: 999px; background: #e9f8f2; color: #16845d; font-size: 11px; font-weight: 650; }
+    .pill::before { width: 5px; height: 5px; border-radius: 50%; background: currentColor; content: ""; }
+    .pill.wait { background: #fff4e5; color: #b96c1b; }
+    .a-activity { padding: 4px 20px 20px; }
+    .a-event { position: relative; padding: 13px 0 13px 22px; border-left: 1px solid #dfe5ee; }
+    .a-event::before { position: absolute; left: -4px; top: 18px; width: 7px; height: 7px; border: 2px solid white; border-radius: 50%; background: #4d7fee; box-shadow: 0 0 0 2px #dce6fb; content: ""; }
+    .a-event b { display: block; color: #33425c; font-size: 12px; }
+    .a-event span { color: #8e9aad; font-size: 11px; }
+
+    /* B — Spatial Bento */
+    .variant-b { min-height: 100vh; overflow: hidden; background: radial-gradient(circle at 8% 0%,#dce8ff 0,transparent 33%), radial-gradient(circle at 92% 18%,#e9ddff 0,transparent 31%), #f4f5f8; color: #151822; }
+    .b-shell { max-width: 1420px; margin: auto; padding: 22px 28px 108px; }
+    .b-nav { display: flex; align-items: center; justify-content: space-between; padding: 11px 13px 11px 18px; border: 1px solid #ffffffb8; border-radius: 18px; background: #ffffffa6; box-shadow: 0 18px 60px #1e2c4914; backdrop-filter: blur(28px); }
+    .b-logo { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: -.02em; }
+    .b-logo span { display: grid; width: 31px; height: 31px; place-items: center; border-radius: 10px; background: #11131a; color: white; font-size: 11px; }
+    .b-tabs { display: flex; gap: 4px; padding: 4px; border-radius: 12px; background: #eff1f5b8; }
+    .b-tabs button { padding: 7px 12px; border-radius: 9px; background: transparent; color: #7b818e; font-size: 12px; }
+    .b-tabs button.active { background: white; color: #1b1e26; box-shadow: 0 2px 9px #14203314; }
+    .b-profile { display: flex; align-items: center; gap: 9px; color: #676e7a; font-size: 12px; }
+    .b-profile i { width: 8px; height: 8px; border-radius: 50%; background: #35bc7a; box-shadow: 0 0 0 4px #35bc7a18; }
+    .b-hero { display: flex; align-items: flex-end; justify-content: space-between; padding: 54px 8px 28px; }
+    .b-hero small { color: #777e8c; font-size: 12px; }
+    .b-hero h1 { max-width: 760px; margin: 8px 0 0; font-size: clamp(34px,4vw,56px); font-weight: 630; line-height: 1.08; letter-spacing: -.055em; }
+    .b-hero h1 span { color: #697184; }
+    .b-action { display: grid; width: 50px; height: 50px; place-items: center; border-radius: 50%; background: #171920; color: white; box-shadow: 0 10px 22px #15182225; }
+    .b-bento { display: grid; grid-template-columns: 1.25fr .75fr .9fr; grid-template-rows: 210px 265px; gap: 14px; }
+    .b-card { position: relative; overflow: hidden; padding: 23px; border: 1px solid #ffffffc4; border-radius: 24px; background: #ffffffaa; box-shadow: 0 18px 55px #26345112; backdrop-filter: blur(24px); }
+    .b-card h2 { margin: 0; color: #777e8c; font-size: 12px; font-weight: 600; }
+    .b-big { grid-row: span 2; background: #151922; color: white; }
+    .b-big::after { position: absolute; width: 380px; height: 380px; right: -150px; bottom: -170px; border-radius: 50%; background: radial-gradient(circle,#446fff,#7e55ff 38%,transparent 70%); opacity: .7; content: ""; }
+    .b-big h2 { color: #9fa8b8; }
+    .b-number { position: relative; z-index: 1; display: block; margin-top: 35px; font-size: 68px; font-weight: 560; line-height: 1; letter-spacing: -.06em; }
+    .b-number small { font-size: 22px; color: #8994a8; }
+    .b-success { position: relative; z-index: 1; margin: 12px 0 0; color: #9da7b7; }
+    .b-success b { color: #66e3ae; }
+    .b-wave { position: absolute; z-index: 1; inset: auto 22px 26px; height: 100px; }
+    .b-wave svg { width: 100%; height: 100%; overflow: visible; }
+    .b-stat strong { display: block; margin: 26px 0 5px; font-size: 38px; font-weight: 590; letter-spacing: -.04em; }
+    .b-stat p { margin: 0; color: #7e8693; font-size: 12px; }
+    .b-stat.blue { background: linear-gradient(145deg,#e4edff,#f8fbff); }
+    .b-stat.violet { background: linear-gradient(145deg,#eee7ff,#fbf9ff); }
+    .b-tasks { grid-column: span 2; padding: 0; }
+    .b-task-head { display: flex; align-items: center; justify-content: space-between; padding: 22px 23px 15px; }
+    .b-task-head button { background: transparent; color: #525967; font-size: 12px; }
+    .b-task-row { display: grid; grid-template-columns: 1.2fr 1fr .65fr 28px; align-items: center; gap: 12px; padding: 13px 23px; border-top: 1px solid #0000000a; color: #6a7180; font-size: 12px; }
+    .b-task-row b { color: #292e38; font-weight: 630; }
+    .b-task-row > span:last-child { display: grid; width: 26px; height: 26px; place-items: center; border-radius: 50%; background: #f0f2f6; color: #5e6673; }
+
+    /* C — Engineering Command */
+    .variant-c { min-height: 100vh; background: #090d14; color: #e8edf7; }
+    .c-rail { position: fixed; inset: 0 auto 0 0; z-index: 20; display: flex; width: 78px; flex-direction: column; align-items: center; padding: 20px 0; border-right: 1px solid #1d2634; background: #0c111a; }
+    .c-mark { display: grid; width: 38px; height: 38px; place-items: center; border: 1px solid #334157; border-radius: 11px; background: linear-gradient(145deg,#172033,#0e1420); color: #78a8ff; font-weight: 750; }
+    .c-rail-nav { display: grid; gap: 10px; margin-top: 34px; }
+    .c-rail-nav button { display: grid; width: 42px; height: 42px; place-items: center; border-radius: 11px; background: transparent; color: #637188; }
+    .c-rail-nav button:hover, .c-rail-nav button.active { background: #172237; color: #7cabff; }
+    .c-rail-bottom { margin-top: auto; }
+    .c-main { min-height: 100vh; margin-left: 78px; padding-bottom: 98px; }
+    .c-topbar { display: flex; height: 68px; align-items: center; justify-content: space-between; padding: 0 28px; border-bottom: 1px solid #1b2431; background: #0b1018cc; backdrop-filter: blur(18px); }
+    .c-title { display: flex; align-items: center; gap: 11px; }
+    .c-title b { font-size: 13px; }
+    .c-title span { padding: 4px 8px; border: 1px solid #27483c; border-radius: 999px; background: #10281f; color: #61dca2; font-size: 9px; font-weight: 700; letter-spacing: .08em; }
+    .c-actions { display: flex; align-items: center; gap: 10px; }
+    .c-ghost { display: flex; align-items: center; gap: 7px; padding: 8px 11px; border: 1px solid #263246; border-radius: 9px; background: #121a27; color: #9aa9bf; font-size: 11px; }
+    .c-run { padding: 9px 13px; border-radius: 9px; background: #4b7fff; color: white; font-size: 11px; font-weight: 650; }
+    .c-content { padding: 26px 28px; }
+    .c-heading { display: flex; align-items: end; justify-content: space-between; margin-bottom: 20px; }
+    .c-heading small { color: #60718b; font-size: 10px; font-weight: 700; letter-spacing: .12em; }
+    .c-heading h1 { margin: 6px 0 0; font-size: 26px; font-weight: 620; letter-spacing: -.035em; }
+    .c-clock { color: #64748b; font: 11px/1.5 ui-monospace,monospace; text-align: right; }
+    .c-clock b { display: block; color: #b7c4d8; font-size: 14px; }
+    .c-grid { display: grid; grid-template-columns: minmax(0,1.35fr) 340px; gap: 14px; }
+    .c-panel { border: 1px solid #1e2938; border-radius: 13px; background: #0e151f; box-shadow: inset 0 1px #ffffff05; }
+    .c-panel-head { display: flex; align-items: center; justify-content: space-between; padding: 15px 17px; border-bottom: 1px solid #1d2735; }
+    .c-panel h2 { margin: 0; color: #c4cedd; font-size: 12px; font-weight: 620; }
+    .c-panel-head span { color: #54647b; font-size: 10px; }
+    .c-kpis { display: grid; grid-template-columns: repeat(4,1fr); border-bottom: 1px solid #1d2735; }
+    .c-kpi { padding: 16px 17px; border-right: 1px solid #1d2735; }
+    .c-kpi:last-child { border: 0; }
+    .c-kpi span { color: #64748b; font-size: 10px; }
+    .c-kpi strong { display: block; margin-top: 8px; font: 22px/1 ui-monospace,SFMono-Regular,Menlo,monospace; font-weight: 560; }
+    .c-kpi small { display: block; margin-top: 7px; color: #4d5d72; font-size: 9px; }
+    .c-kpi small.good { color: #55cc96; }
+    .c-chart { position: relative; height: 210px; padding: 20px; overflow: hidden; background-image: linear-gradient(#1a243120 1px,transparent 1px),linear-gradient(90deg,#1a243120 1px,transparent 1px); background-size: 44px 44px; }
+    .c-chart svg { width: 100%; height: 100%; }
+    .c-chart-label { position: absolute; right: 17px; top: 14px; color: #4f6075; font: 9px ui-monospace,monospace; }
+    .c-exec { margin-top: 14px; overflow: hidden; }
+    .c-table { width: 100%; border-collapse: collapse; text-align: left; }
+    .c-table th { padding: 9px 15px; background: #111a27; color: #53637a; font-size: 9px; font-weight: 700; letter-spacing: .08em; }
+    .c-table td { padding: 12px 15px; border-top: 1px solid #182331; color: #8493a9; font-size: 11px; }
+    .c-table b { color: #c5d0df; font: 11px ui-monospace,monospace; }
+    .c-state { display: inline-flex; align-items: center; gap: 6px; color: #55d39b; font-size: 10px; }
+    .c-state::before { width: 5px; height: 5px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor; content: ""; }
+    .c-state.wait { color: #e5a953; }
+    .c-stream { padding: 5px 17px 17px; }
+    .c-event { position: relative; padding: 15px 0 15px 19px; border-left: 1px solid #243044; }
+    .c-event::before { position: absolute; left: -3px; top: 20px; width: 5px; height: 5px; border-radius: 50%; background: #4d7fff; box-shadow: 0 0 9px #4d7fff; content: ""; }
+    .c-event time { color: #4f6179; font: 9px ui-monospace,monospace; }
+    .c-event b { display: block; margin: 5px 0 2px; color: #aebacc; font-size: 11px; font-weight: 520; }
+    .c-event span { color: #596a80; font-size: 10px; }
+    .c-runtime { margin-top: 14px; padding: 15px 17px; }
+    .c-runtime-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; color: #66778e; font-size: 10px; }
+    .c-runtime-row b { color: #aab6c8; font: 10px ui-monospace,monospace; }
+
+    @media (max-width: 1050px) {
+      .a-metrics { grid-template-columns: repeat(2,1fr); }
+      .a-grid, .c-grid { grid-template-columns: 1fr; }
+      .b-bento { grid-template-columns: 1fr 1fr; grid-template-rows: auto; }
+      .b-big { grid-row: span 2; min-height: 430px; }
+      .b-tasks { grid-column: span 2; }
+    }
+    @media (max-width: 760px) {
+      .prototype-label { min-width: 150px; }
+      .a-sidebar { position: static; width: 100%; height: 68px; flex-direction: row; align-items: center; padding: 12px 16px; }
+      .a-brand { padding: 0; }
+      .a-brand div, .a-nav-label, .a-nav button:not(.active), .a-environment { display: none; }
+      .a-nav { margin-left: auto; }
+      .a-nav button.active { margin: 0; }
+      .a-main { margin-left: 0; padding: 0 17px 100px; }
+      .a-search, .a-breadcrumb { display: none; }
+      .a-hero { align-items: flex-start; flex-direction: column; gap: 18px; padding-top: 30px; }
+      .a-metrics { grid-template-columns: 1fr 1fr; }
+      .a-grid { grid-template-columns: 1fr; }
+      .a-table th:nth-child(2), .a-table td:nth-child(2) { display: none; }
+      .b-shell { padding: 14px 14px 104px; }
+      .b-tabs { display: none; }
+      .b-hero { align-items: flex-start; flex-direction: column; gap: 20px; padding-top: 38px; }
+      .b-bento { grid-template-columns: 1fr; }
+      .b-big { grid-row: auto; min-height: 410px; }
+      .b-tasks { grid-column: auto; }
+      .b-task-row { grid-template-columns: 1fr auto; }
+      .b-task-row span:nth-child(2), .b-task-row span:nth-child(3) { display: none; }
+      .c-rail { width: 60px; }
+      .c-main { margin-left: 60px; }
+      .c-content, .c-topbar { padding-left: 15px; padding-right: 15px; }
+      .c-ghost { display: none; }
+      .c-kpis { grid-template-columns: 1fr 1fr; }
+      .c-kpi:nth-child(2) { border-right: 0; }
+      .c-kpi:nth-child(-n+2) { border-bottom: 1px solid #1d2735; }
+      .c-heading { align-items: flex-start; flex-direction: column; gap: 10px; }
+      .c-clock { text-align: left; }
+    }
+  </style>
+</head>
+<body data-variant="a">
+  <svg aria-hidden="true" width="0" height="0" style="position:absolute"><defs>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></symbol>
+    <symbol id="i-task" viewBox="0 0 24 24"><path d="M8 6h12M8 12h12M8 18h12"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></symbol>
+    <symbol id="i-data" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></symbol>
+    <symbol id="i-node" viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="18" r="3"/><path d="m8.5 7.5 2.3 7.7M15.5 7.5l-2.3 7.7M9 6h6"/></symbol>
+    <symbol id="i-log" viewBox="0 0 24 24"><path d="M5 3h14v18H5zM8 8h8M8 12h8M8 16h5"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m16.5 16.5 4 4"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+    <symbol id="i-bolt" viewBox="0 0 24 24"><path d="m13 2-8 12h7l-1 8 8-12h-7z"/></symbol>
+  </defs></svg>
+
+  <section class="variant variant-a" aria-label="A 方案：Precision Cloud">
+    <aside class="a-sidebar">
+      <div class="a-brand"><span class="a-brand-mark">MS</span><div><b>报文模拟系统</b><small>MESSAGE SIMULATION</small></div></div>
+      <div class="a-nav-label">工作空间</div>
+      <nav class="a-nav">
+        <button class="active"><svg class="icon"><use href="#i-grid"/></svg>运行总览</button>
+        <button><svg class="icon"><use href="#i-task"/></svg>任务管理</button>
+        <button><svg class="icon"><use href="#i-file"/></svg>报文管理</button>
+        <button><svg class="icon"><use href="#i-data"/></svg>数据项管理</button>
+        <button><svg class="icon"><use href="#i-node"/></svg>消息组件管理</button>
+        <button><svg class="icon"><use href="#i-log"/></svg>执行日志</button>
+      </nav>
+      <div class="a-environment"><span>测试环境运行正常</span><small>RocketMQ 首链路 · 6 个服务</small></div>
+    </aside>
+    <main class="a-main">
+      <header class="a-topbar">
+        <div class="a-breadcrumb">工作空间&nbsp; / &nbsp;<b>运行总览</b></div>
+        <div class="a-account"><div class="a-search"><svg class="icon sm"><use href="#i-search"/></svg>搜索任务、Execution…</div><div class="a-avatar">NA</div></div>
+      </header>
+      <div class="a-content">
+        <header class="a-hero"><div><p class="a-eyebrow">SYSTEM OVERVIEW</p><h1>早上好，系统运行稳定</h1><p>集中查看任务状态、执行结果与投递健康度。</p></div><button class="a-primary"><svg class="icon sm"><use href="#i-plus"/></svg>新建任务</button></header>
+        <section class="a-metrics">
+          <article class="a-metric"><div class="a-metric-head"><span>任务总数</span><i><svg class="icon sm"><use href="#i-task"/></svg></i></div><strong>24</strong><small class="up">16 个已启用</small></article>
+          <article class="a-metric" style="--tone:#7b54d8;--soft:#f1edff;--glow:#f2edff"><div class="a-metric-head"><span>Execution 总数</span><i><svg class="icon sm"><use href="#i-bolt"/></svg></i></div><strong>1,286</strong><small>今日新增 42 次</small></article>
+          <article class="a-metric" style="--tone:#17865f;--soft:#e9f8f2;--glow:#eaf9f2"><div class="a-metric-head"><span>投递成功率</span><i><svg class="icon sm"><use href="#i-node"/></svg></i></div><strong>99.8%</strong><small class="up">较昨日 +0.3%</small></article>
+          <article class="a-metric" style="--tone:#bd6c1a;--soft:#fff4e7;--glow:#fff4e6"><div class="a-metric-head"><span>失败报文</span><i><svg class="icon sm"><use href="#i-log"/></svg></i></div><strong>12</strong><small class="warn">3 项需要处理</small></article>
+        </section>
+        <section class="a-grid">
+          <article class="a-card"><header class="a-card-head"><h2>任务概况</h2><button>查看全部 →</button></header><table class="a-table"><thead><tr><th>任务</th><th>投递目标</th><th>调度</th><th>状态</th></tr></thead><tbody>
+            <tr><td><b>气象实时数据模拟</b><small>JSON · 标准报文</small></td><td>RocketMQ-Test / weather</td><td>每 10 秒</td><td><span class="pill">运行中</span></td></tr>
+            <tr><td><b>污染短临预报</b><small>JSON · 预报报文</small></td><td>RocketMQ-Pre / forecast</td><td>Cron</td><td><span class="pill wait">等待中</span></td></tr>
+            <tr><td><b>风电功率文件引用</b><small>FILE · 文件引用</small></td><td>RocketMQ-Test / energy</td><td>手动</td><td><span class="pill">已启用</span></td></tr>
+          </tbody></table></article>
+          <article class="a-card"><header class="a-card-head"><h2>最近动态</h2><button>执行日志</button></header><div class="a-activity">
+            <div class="a-event"><b>气象实时数据模拟执行完成</b><span>成功 2,400 · 失败 0　2 分钟前</span></div>
+            <div class="a-event"><b>RocketMQ-Test 连接验证成功</b><span>消息组件管理　18 分钟前</span></div>
+            <div class="a-event"><b>预报报文已更新</b><span>版本 v4　今天 09:24</span></div>
+          </div></article>
+        </section>
+      </div>
+    </main>
+  </section>
+
+  <section class="variant variant-b" aria-label="B 方案：Spatial Bento">
+    <div class="b-shell">
+      <nav class="b-nav"><div class="b-logo"><span>MS</span>报文模拟系统</div><div class="b-tabs"><button class="active">总览</button><button>任务</button><button>报文</button><button>数据项</button><button>消息组件</button><button>日志</button></div><div class="b-profile"><i></i>测试环境　NA</div></nav>
+      <header class="b-hero"><div><small>星期二 · 2026 年 9 月 1 日</small><h1>所有模拟任务，<br><span>尽在一个清晰视图。</span></h1></div><button class="b-action" aria-label="新建任务"><svg class="icon"><use href="#i-plus"/></svg></button></header>
+      <main class="b-bento">
+        <article class="b-card b-big"><h2>今日投递</h2><strong class="b-number">128,460<small> 条</small></strong><p class="b-success"><b>99.8%</b> 投递成功 · 12 条失败</p><div class="b-wave"><svg viewBox="0 0 500 100" preserveAspectRatio="none"><defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#7596ff" stop-opacity=".42"/><stop offset="1" stop-color="#7596ff" stop-opacity="0"/></linearGradient></defs><path d="M0 83 C40 80 55 42 96 53 S156 89 205 56 267 17 315 48 388 76 500 21 L500 100 0 100Z" fill="url(#bg)"/><path d="M0 83 C40 80 55 42 96 53 S156 89 205 56 267 17 315 48 388 76 500 21" fill="none" stroke="#87a3ff" stroke-width="3"/></svg></div></article>
+        <article class="b-card b-stat blue"><h2>活动任务</h2><strong>16</strong><p>共 24 个任务 · 2 个等待执行</p></article>
+        <article class="b-card b-stat violet"><h2>本月 Execution</h2><strong>1,286</strong><p>较上月增长 18.4%</p></article>
+        <article class="b-card b-tasks"><header class="b-task-head"><h2>现在运行</h2><button>查看全部　→</button></header>
+          <div class="b-task-row"><b>气象实时数据模拟</b><span>RocketMQ-Test / weather</span><span class="pill">运行中</span><span>›</span></div>
+          <div class="b-task-row"><b>污染短临预报</b><span>RocketMQ-Pre / forecast</span><span class="pill wait">等待中</span><span>›</span></div>
+          <div class="b-task-row"><b>风电功率文件引用</b><span>RocketMQ-Test / energy</span><span class="pill">已启用</span><span>›</span></div>
+        </article>
+      </main>
+    </div>
+  </section>
+
+  <section class="variant variant-c" aria-label="C 方案：Engineering Command">
+    <aside class="c-rail"><span class="c-mark">MS</span><nav class="c-rail-nav"><button class="active"><svg class="icon"><use href="#i-grid"/></svg></button><button><svg class="icon"><use href="#i-task"/></svg></button><button><svg class="icon"><use href="#i-file"/></svg></button><button><svg class="icon"><use href="#i-data"/></svg></button><button><svg class="icon"><use href="#i-node"/></svg></button><button><svg class="icon"><use href="#i-log"/></svg></button></nav><button class="c-mark c-rail-bottom">NA</button></aside>
+    <main class="c-main">
+      <header class="c-topbar"><div class="c-title"><b>MESSAGE SIMULATION</b><span>TEST · ONLINE</span></div><div class="c-actions"><button class="c-ghost"><svg class="icon sm"><use href="#i-search"/></svg>快速检索　⌘ K</button><button class="c-run">＋ 创建执行</button></div></header>
+      <div class="c-content">
+        <header class="c-heading"><div><small>OPERATIONS / OVERVIEW</small><h1>执行控制台</h1></div><div class="c-clock">系统时间<b>2026-09-01　10:42:18 CST</b></div></header>
+        <section class="c-grid">
+          <div>
+            <article class="c-panel"><header class="c-panel-head"><h2>投递流量</h2><span>最近 60 分钟 · 自动刷新</span></header><div class="c-kpis"><div class="c-kpi"><span>当前 TPS</span><strong>612</strong><small class="good">▲ 4.8%</small></div><div class="c-kpi"><span>成功率</span><strong>99.8%</strong><small class="good">健康</small></div><div class="c-kpi"><span>活动执行</span><strong>03</strong><small>最大并发 50</small></div><div class="c-kpi"><span>失败报文</span><strong>12</strong><small>3 条待处置</small></div></div><div class="c-chart"><span class="c-chart-label">MESSAGE / SEC</span><svg viewBox="0 0 900 170" preserveAspectRatio="none"><defs><linearGradient id="cg" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#4c82ff" stop-opacity=".3"/><stop offset="1" stop-color="#4c82ff" stop-opacity="0"/></linearGradient></defs><path d="M0 136 C40 129 58 83 95 102 S153 135 197 91 259 41 311 75 369 116 421 82 489 28 544 58 609 122 663 73 728 39 775 58 841 78 900 25 L900 170 0 170Z" fill="url(#cg)"/><path d="M0 136 C40 129 58 83 95 102 S153 135 197 91 259 41 311 75 369 116 421 82 489 28 544 58 609 122 663 73 728 39 775 58 841 78 900 25" fill="none" stroke="#5890ff" stroke-width="2.5"/></svg></div></article>
+            <article class="c-panel c-exec"><header class="c-panel-head"><h2>活动 Execution</h2><span>03 RUNNING / 01 QUEUED</span></header><table class="c-table"><thead><tr><th>EXECUTION</th><th>任务</th><th>投递目标</th><th>进度</th><th>状态</th></tr></thead><tbody>
+              <tr><td><b>EX-20260901-128</b></td><td>气象实时数据模拟</td><td>RocketMQ-Test</td><td>38,720 / 60,000</td><td><span class="c-state">RUNNING</span></td></tr>
+              <tr><td><b>EX-20260901-127</b></td><td>污染短临预报</td><td>RocketMQ-Pre</td><td>12,000 / 12,000</td><td><span class="c-state">SUCCESS</span></td></tr>
+              <tr><td><b>EX-20260901-126</b></td><td>风电功率文件引用</td><td>RocketMQ-Test</td><td>0 / 2,400</td><td><span class="c-state wait">QUEUED</span></td></tr>
+            </tbody></table></article>
+          </div>
+          <aside>
+            <article class="c-panel"><header class="c-panel-head"><h2>实时事件</h2><span>LIVE</span></header><div class="c-stream"><div class="c-event"><time>10:41:52.084</time><b>Execution 批次投递完成</b><span>EX-128 · 成功 2,400 / 失败 0</span></div><div class="c-event"><time>10:38:16.291</time><b>消息组件连接验证成功</b><span>RocketMQ-Test · 43ms</span></div><div class="c-event"><time>10:35:02.772</time><b>Execution 进入等待队列</b><span>EX-126 · 手工执行</span></div><div class="c-event"><time>10:24:40.105</time><b>报文版本发布</b><span>预报报文 · v4</span></div></div></article>
+            <article class="c-panel c-runtime"><header class="c-panel-head" style="padding:0 0 10px"><h2>运行环境</h2><span>ALL SYSTEMS NOMINAL</span></header><div class="c-runtime-row"><span>Backend API</span><b>18 ms</b></div><div class="c-runtime-row"><span>PostgreSQL 15</span><b>CONNECTED</b></div><div class="c-runtime-row"><span>RocketMQ 首链路</span><b>HEALTHY</b></div></article>
+          </aside>
+        </section>
+      </div>
+    </main>
+  </section>
+
+  <div class="prototype-switcher" aria-label="原型方案切换器">
+    <button id="previous" aria-label="上一个方案">←</button>
+    <span class="prototype-label"><b id="variant-label"></b><small>← → 键也可切换 · PROTOTYPE ONLY</small></span>
+    <button id="next" aria-label="下一个方案">→</button>
+  </div>
+  <script>
+    const variants = [
+      { key: 'a', label: 'A · Precision Cloud' },
+      { key: 'b', label: 'B · Spatial Bento' },
+      { key: 'c', label: 'C · Engineering Command' }
+    ]
+    const params = new URLSearchParams(location.search)
+    let current = Math.max(0, variants.findIndex(item => item.key === params.get('variant')))
+    function renderVariant(index) {
+      current = (index + variants.length) % variants.length
+      const selected = variants[current]
+      document.body.dataset.variant = selected.key
+      document.getElementById('variant-label').textContent = selected.label
+      const url = new URL(location.href)
+      url.searchParams.set('variant', selected.key)
+      history.replaceState(null, '', url)
+    }
+    document.getElementById('previous').addEventListener('click', () => renderVariant(current - 1))
+    document.getElementById('next').addEventListener('click', () => renderVariant(current + 1))
+    document.addEventListener('keydown', event => {
+      const tag = document.activeElement?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || document.activeElement?.isContentEditable) return
+      if (event.key === 'ArrowLeft') renderVariant(current - 1)
+      if (event.key === 'ArrowRight') renderVariant(current + 1)
+    })
+    renderVariant(current)
+  </script>
+</body>
+</html>
