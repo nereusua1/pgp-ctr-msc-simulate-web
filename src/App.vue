@@ -11,7 +11,7 @@ import AppIcon from './components/AppIcon.vue'
 import PageSkeleton from './components/PageSkeleton.vue'
 import * as api from './api'
 import {runExclusive} from './action-guard.mjs'
-import {getAuthenticatedUsername, isAuthenticatedUser} from './authentication.mjs'
+import {canManageConfiguration, getAuthenticatedRole, getAuthenticatedUsername, hasPermission, isAuthenticatedUser} from './authentication.mjs'
 import {
   flattenResource,
   normalizeDataItem,
@@ -63,6 +63,9 @@ const serviceState = computed(() => loadError.value ? {label: '接口异常', to
   tone: 'online'
 })
 const authenticatedUsername = computed(() => getAuthenticatedUsername(currentUser.value))
+const authenticatedRole = computed(() => getAuthenticatedRole(currentUser.value))
+const canManage = computed(() => canManageConfiguration(currentUser.value))
+const canCheckConnection = computed(() => hasPermission(currentUser.value, 'CONNECTION_CHECK'))
 const isAuthenticated = computed(() => isAuthenticatedUser(currentUser.value))
 const currentComponent = computed(() => ({
   overview: OverviewView,
@@ -89,21 +92,25 @@ const pageProps = computed(() => {
     sources: dataItems.value,
     executionMessages: executionMessages.value,
     selectedTaskId: selectedTaskId.value,
-    pendingActions
+    pendingActions,
+    canManage: canManage.value
   }
   if (activePage.value === 'messages') return {
     templates: templates.value,
     sources: dataItems.value,
     components: components.value,
     tasks: tasks.value,
-    pendingActions
+    pendingActions,
+    canManage: canManage.value
   }
   if (activePage.value === 'data-items') return {items: dataItems.value, pendingActions}
   if (activePage.value === 'message-components') return {
     components: components.value,
     templates: templates.value,
     tasks: tasks.value,
-    pendingActions
+    pendingActions,
+    canManage: canManage.value,
+    canCheckConnection: canCheckConnection.value
   }
   return {
     executions: executions.value,
@@ -246,6 +253,7 @@ async function queryExecutions(query = {}) {
 }
 
 async function createResource(item, onCreated) {
+  if (!canManage.value) { notify('当前账号没有配置管理权限', 'error'); return }
   const endpoint = endpoints[activePage.value]
   await runExclusive(pendingActions, `create:${endpoint}`, async () => {
     try {
@@ -260,6 +268,7 @@ async function createResource(item, onCreated) {
 }
 
 async function updateResource(item, onUpdated) {
+  if (!canManage.value) { notify('当前账号没有配置管理权限', 'error'); return }
   const endpoint = endpoints[activePage.value]
   await runExclusive(pendingActions, `update:${endpoint}:${item.id}`, async () => {
     try {
@@ -275,6 +284,7 @@ async function updateResource(item, onUpdated) {
 }
 
 async function removeResource(id, onRemoved) {
+  if (!canManage.value) { notify('当前账号没有配置管理权限', 'error'); return }
   const endpoint = endpoints[activePage.value]
   await runExclusive(pendingActions, `remove:${endpoint}:${id}`, async () => {
     try {
@@ -347,6 +357,7 @@ async function loadTaskExecutionOverview(taskId, onLoaded) {
 }
 
 async function checkComponent({id, topic = ''}) {
+  if (!canCheckConnection.value) { notify('当前账号没有 MQ 连接检查权限', 'error'); return }
   await runExclusive(pendingActions, `check:${id}:${topic}`, async () => {
     try {
       const result = await api.checkMessageComponent(id, topic);
@@ -438,7 +449,7 @@ onMounted(initialize)
         <div class="account-area"><span class="service-tag" :class="serviceState.tone">{{
             serviceState.label
           }}</span><span class="account-avatar">{{ authenticatedUsername.slice(0, 2).toUpperCase() }}</span><span
-            class="account-name">{{ authenticatedUsername }}</span>
+            class="account-name">{{ authenticatedUsername }}</span><span class="account-role">{{ authenticatedRole === 'ADMIN' ? '管理员' : '操作员' }}</span>
           <button class="logout-button" :disabled="pendingActions.has('logout')" @click="logout">
             <AppIcon name="logout" :size="16"/>
             {{ pendingActions.has('logout') ? '正在退出…' : '退出' }}
@@ -461,9 +472,7 @@ onMounted(initialize)
     </div>
     <transition name="toast">
       <div v-if="toast" class="toast" :class="toast.tone" :role="toast.tone === 'error' ? 'alert' : 'status'"
-           :aria-live="toast.tone === 'error' ? 'assertive' : 'polite'"><strong>{{
-          toast.title
-        }}</strong><span>{{ toast.message }}</span></div>
+           :aria-live="toast.tone === 'error' ? 'assertive' : 'polite'"><strong>{{ toast.title }}</strong><span>{{ toast.message }}</span></div>
     </transition>
   </div>
 </template>
@@ -507,6 +516,15 @@ onMounted(initialize)
 .account-name {
   color: #46576f;
   font-size: 14px;
+  font-weight: 650;
+}
+
+.account-role {
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #5268b8;
+  font-size: 11px;
   font-weight: 650;
 }
 

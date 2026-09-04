@@ -14,7 +14,9 @@ const props = defineProps({
   components: { type: Array, default: () => [] },
   templates: { type: Array, default: () => [] },
   tasks: { type: Array, default: () => [] },
-  pendingActions: { type: Object, default: () => new Set() }
+  pendingActions: { type: Object, default: () => new Set() },
+  canManage: { type: Boolean, default: false },
+  canCheckConnection: { type: Boolean, default: false }
 })
 const emit = defineEmits(['create', 'update', 'remove', 'check-component'])
 const dialog = ref('')
@@ -170,7 +172,7 @@ function submit() {
 
 <template>
   <main class="page">
-    <div class="page-heading"><div><h1>消息组件管理</h1><p>维护 RocketMQ 实例鉴权、Producer Group 与 Topic，连接验证由后端使用真实凭证访问服务端。</p></div><button class="button primary" @click="openCreate"><AppIcon name="plus" :size="16" />新建消息组件</button></div>
+    <div class="page-heading"><div><h1>消息组件管理</h1><p>维护 RocketMQ 实例鉴权、Producer Group 与 Topic，连接验证由后端使用真实凭证访问服务端。</p></div><button v-if="canManage" class="button primary" @click="openCreate"><AppIcon name="plus" :size="16" />新建消息组件</button></div>
     <section class="card instance-list-card">
       <div class="card-heading"><div><h2>MQ 实例列表</h2><p>每行对应一个独立 MQ 实例；点击实例名称查看连接与路由配置。</p></div><span class="muted">共 {{ components.length }} 个实例</span></div>
       <div class="table-scroll"><table class="data-table management-table instance-table"><thead><tr><th>MQ 实例</th><th>NAMESRV_ADDR</th><th>Producer Group</th><th>Topic</th><th>状态</th><th class="align-right">操作</th></tr></thead><tbody>
@@ -180,7 +182,7 @@ function submit() {
           <td><span v-if="producerGroupsOf(item).length" class="summary-chip">{{ producerGroupsOf(item)[0] }}</span><span v-if="producerGroupsOf(item).length > 1" class="more-count">+{{ producerGroupsOf(item).length - 1 }}</span><span v-if="!producerGroupsOf(item).length" class="muted">未配置</span></td>
           <td><span class="count-summary"><b>{{ item.topics?.length || 0 }}</b> 个 Topic</span></td>
           <td><StatusBadge :status="item.status" /></td>
-          <td class="align-right"><div class="table-actions"><button class="link-button" :disabled="isPending(`check:${item.id}:`)" @click="emit('check-component', { id: item.id })">{{ isPending(`check:${item.id}:`) ? '测试中…' : '测试连接' }}</button><button class="link-button" @click="openDetail(item)">详情</button><button class="link-button" :disabled="isPending(`update:message-components:${item.id}`)" @click="openEdit(item)">修改</button><button class="link-button danger-text" :disabled="isPending(`remove:message-components:${item.id}`)" @click="openDelete(item)">删除</button></div></td>
+          <td class="align-right"><div class="table-actions"><button v-if="canCheckConnection" class="link-button" :disabled="isPending(`check:${item.id}:`)" @click="emit('check-component', { id: item.id })">{{ isPending(`check:${item.id}:`) ? '测试中…' : '测试连接' }}</button><button class="link-button" @click="openDetail(item)">详情</button><button v-if="canManage" class="link-button" :disabled="isPending(`update:message-components:${item.id}`)" @click="openEdit(item)">修改</button><button v-if="canManage" class="link-button danger-text" :disabled="isPending(`remove:message-components:${item.id}`)" @click="openDelete(item)">删除</button></div></td>
         </tr>
         <tr v-if="!components.length"><td colspan="6" class="empty-state">后端尚无消息组件，请先新建实例。</td></tr>
       </tbody></table></div>
@@ -204,22 +206,22 @@ function submit() {
             <div v-if="producerGroupsOf(selectedItem).length" class="route-list"><CopyValue v-for="group in producerGroupsOf(selectedItem)" :key="group" :value="group"/></div><div v-else class="inline-empty">尚未配置 Producer Group</div>
           </DetailSection>
           <DetailSection title="Topic" description="可逐项验证真实 RocketMQ 路由" :count="selectedItem.topics?.length || 0">
-            <div v-if="selectedItem.topics?.length" class="route-list"><div v-for="topic in selectedItem.topics" :key="topic"><CopyValue :value="topic"/><button class="link-button" :disabled="isPending(`check:${selectedItem.id}:${topic}`)" @click="emit('check-component', { id: selectedItem.id, topic })">{{ isPending(`check:${selectedItem.id}:${topic}`) ? '验证中…' : '验证路由' }}</button></div></div><div v-else class="inline-empty">尚未配置 Topic</div>
+            <div v-if="selectedItem.topics?.length" class="route-list"><div v-for="topic in selectedItem.topics" :key="topic"><CopyValue :value="topic"/><button v-if="canCheckConnection" class="link-button" :disabled="isPending(`check:${selectedItem.id}:${topic}`)" @click="emit('check-component', { id: selectedItem.id, topic })">{{ isPending(`check:${selectedItem.id}:${topic}`) ? '验证中…' : '验证路由' }}</button></div></div><div v-else class="inline-empty">尚未配置 Topic</div>
           </DetailSection>
         </div>
         <DetailGrid :columns="2"><div><dt>创建时间</dt><dd>{{ formatDateTime(selectedItem.createdAt) }}</dd></div><div><dt>更新时间</dt><dd>{{ formatDateTime(selectedItem.updatedAt) }}</dd></div></DetailGrid>
       </div>
-      <template #footer><button class="button secondary" :disabled="isPending(`check:${selectedItem.id}:`)" @click="emit('check-component', { id: selectedItem.id })">{{ isPending(`check:${selectedItem.id}:`) ? '测试中…' : '测试连接' }}</button><button class="button primary" @click="openEdit(selectedItem)">修改配置</button></template>
+      <template #footer><button v-if="canCheckConnection" class="button secondary" :disabled="isPending(`check:${selectedItem.id}:`)" @click="emit('check-component', { id: selectedItem.id })">{{ isPending(`check:${selectedItem.id}:`) ? '测试中…' : '测试连接' }}</button><button v-if="canManage" class="button primary" @click="openEdit(selectedItem)">修改配置</button></template>
     </AppModal>
 
-    <AppModal v-if="dialog === 'delete' && selectedItem" title="删除 MQ 实例" @close="dialog = ''">
+    <AppModal v-if="canManage && dialog === 'delete' && selectedItem" title="删除 MQ 实例" @close="dialog = ''">
       <p>确定删除 MQ 实例 <b>{{ selectedItem.name }}</b> 吗？删除后无法在本系统中恢复。</p>
       <div v-if="referenceTemplates.length || referenceTasks.length" class="notice"><b>当前不能删除：</b><span v-if="referenceTemplates.length"> {{ referenceTemplates.length }} 个报文引用该实例</span><span v-if="referenceTemplates.length && referenceTasks.length">，</span><span v-if="referenceTasks.length"> {{ referenceTasks.length }} 个任务引用该实例</span>。请先调整相关配置。</div>
       <div v-else class="notice">该实例没有被报文或任务引用，确认后将从 PostgreSQL 删除。</div>
       <template #footer><button class="button secondary" @click="dialog = ''">取消</button><button class="button danger" :disabled="referenceTemplates.length || referenceTasks.length || isPending(`remove:message-components:${selectedItem.id}`)" @click="confirmDelete">{{ isPending(`remove:message-components:${selectedItem.id}`) ? '正在删除…' : '确认删除' }}</button></template>
     </AppModal>
 
-    <AppModal v-if="dialog === 'edit'" :title="form.id ? '编辑 RocketMQ 组件' : '新建 RocketMQ 组件'" wide @close="dialog = ''">
+    <AppModal v-if="canManage && dialog === 'edit'" :title="form.id ? '编辑 RocketMQ 组件' : '新建 RocketMQ 组件'" wide @close="dialog = ''">
       <section class="basic-panel">
         <div class="section-heading"><div><h3>基础配置与鉴权</h3><p>字段语义与 RocketMQ 官方配置一致；SecretKey 使用密码框输入且服务端不会回显。</p></div></div>
         <div class="form-grid three-column component-editor-base">

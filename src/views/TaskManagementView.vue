@@ -15,7 +15,8 @@ const props = defineProps({
   sources: {type: Array, default: () => []},
   executionMessages: {type: Array, default: () => []},
   selectedTaskId: {type: String, default: ''},
-  pendingActions: {type: Object, default: () => new Set()}
+  pendingActions: {type: Object, default: () => new Set()},
+  canManage: {type: Boolean, default: false}
 })
 const emit = defineEmits(['create', 'run', 'preview-time', 'update', 'remove', 'load-messages', 'load-task-execution-overview'])
 const selectedId = ref('')
@@ -266,7 +267,7 @@ watch(cron, syncCronExpression, {deep: true})
     <div class="page-heading">
       <div><h1>任务管理</h1>
         <p>任务配置报文、RocketMQ 投递目标与调度方式；执行结果来自后端实际投递记录。</p></div>
-      <button class="button primary" @click="openCreate"><AppIcon name="plus" :size="16" />新建任务</button>
+      <button v-if="canManage" class="button primary" @click="openCreate"><AppIcon name="plus" :size="16" />新建任务</button>
     </div>
     <section class="card task-list-card">
       <div class="card-heading">
@@ -297,17 +298,17 @@ watch(cron, syncCronExpression, {deep: true})
             <td class="align-right">
               <div class="table-actions">
                 <button class="link-button" @click="openDetail(task)">详情</button>
-                <button class="link-button" @click="openEdit(task)">修改</button>
-                <button v-if="task.status === 'ENABLED'" class="link-button danger-text"
+                <button v-if="canManage" class="link-button" @click="openEdit(task)">修改</button>
+                <button v-if="canManage && task.status === 'ENABLED'" class="link-button danger-text"
                         :disabled="isTaskPending(task)" @click="setTaskEnabled(task, false)">停用
                 </button>
-                <button v-else class="link-button" :disabled="isTaskPending(task)" @click="setTaskEnabled(task, true)">启用</button>
-                <button class="link-button danger-text" :disabled="isTaskPending(task)" @click="openDelete(task)">删除</button>
+                <button v-else-if="canManage" class="link-button" :disabled="isTaskPending(task)" @click="setTaskEnabled(task, true)">启用</button>
+                <button v-if="canManage" class="link-button danger-text" :disabled="isTaskPending(task)" @click="openDelete(task)">删除</button>
               </div>
             </td>
           </tr>
           <tr v-if="!tasks.length">
-            <td colspan="5" class="empty-state">后端尚无任务，请先新建任务。</td>
+            <td colspan="5" class="empty-state">{{ canManage ? '后端尚无任务，请先新建任务。' : '当前暂无可执行任务。' }}</td>
           </tr>
           </tbody>
         </table>
@@ -315,7 +316,7 @@ watch(cron, syncCronExpression, {deep: true})
       <div class="pagination"><span>共 {{ tasks.length }} 个任务，第 {{ page }} / {{ totalPages }} 页</span><div><button class="button secondary small" :disabled="page <= 1" @click="page--">上一页</button><button class="button secondary small" :disabled="page >= totalPages" @click="page++">下一页</button></div></div>
     </section>
 
-    <AppModal v-if="dialog === 'create' || dialog === 'edit'"
+    <AppModal v-if="canManage && (dialog === 'create' || dialog === 'edit')"
               :title="dialog === 'edit' ? `修改任务 · ${selected?.name}` : '新建任务'" @close="dialog = ''">
       <section class="message-query">
         <div class="query-heading">
@@ -423,9 +424,9 @@ watch(cron, syncCronExpression, {deep: true})
         </template>
       </div>
       <template #footer>
-        <button class="button danger detail-danger-action" :disabled="isTaskPending(selected)" @click="openDelete(selected)">删除任务</button>
+        <button v-if="canManage" class="button danger detail-danger-action" :disabled="isTaskPending(selected)" @click="openDelete(selected)">删除任务</button>
         <button class="button secondary" :disabled="!latestExecution || isPending(`load-messages:${latestExecution?.id}`)" @click="openMessages">{{ isPending(`load-messages:${latestExecution?.id}`) ? '正在加载…' : '查看最近执行报文' }}</button>
-        <button class="button secondary" :disabled="isTaskPending(selected)" @click="openEdit(selected)">修改配置</button>
+        <button v-if="canManage" class="button secondary" :disabled="isTaskPending(selected)" @click="openEdit(selected)">修改配置</button>
         <button class="button primary" :disabled="isPending(`run:${selected.id}`)" @click="openRun(selected)"><AppIcon name="play" :size="15" />立即执行</button>
       </template>
     </AppModal>
@@ -472,7 +473,7 @@ watch(cron, syncCronExpression, {deep: true})
       </template>
     </AppModal>
 
-    <AppModal v-if="dialog === 'delete' && selected" title="删除任务" @close="dialog = ''">
+    <AppModal v-if="canManage && dialog === 'delete' && selected" title="删除任务" @close="dialog = ''">
       <div class="delete-confirm"><strong>{{ selected.name }}</strong>
         <p>删除后任务配置无法恢复，系统不会再按照该任务的调度规则执行。</p>
         <div class="notice">历史 Execution 和执行报文仍会保留，可继续在执行日志中查询。</div>

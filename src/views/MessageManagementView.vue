@@ -9,7 +9,7 @@ import DetailGrid from '../components/DetailGrid.vue'
 import DetailSection from '../components/DetailSection.vue'
 import * as api from '../api'
 
-const props = defineProps({ templates: Array, sources: Array, components: Array, tasks: Array, pendingActions: { type: Object, default: () => new Set() } })
+const props = defineProps({ templates: Array, sources: Array, components: Array, tasks: Array, pendingActions: { type: Object, default: () => new Set() }, canManage: { type: Boolean, default: false } })
 const emit = defineEmits(['update', 'create', 'remove', 'notify', 'check-component', 'editing-state'])
 const selectedId = ref(props.templates[0]?.id || '')
 const keyword = ref('')
@@ -521,7 +521,7 @@ function confirmDelete() {
 
 <template>
   <main class="page message-page">
-    <div class="page-heading"><div><h1>报文管理</h1><p>每行展示一份报文，点击名称查看完整配置。</p></div><button class="button primary" @click="openCreate"><AppIcon name="plus" :size="16" />新建报文</button></div>
+    <div class="page-heading"><div><h1>报文管理</h1><p>每行展示一份报文，点击名称查看完整配置。</p></div><button v-if="canManage" class="button primary" @click="openCreate"><AppIcon name="plus" :size="16" />新建报文</button></div>
     <section class="card message-list-card">
       <div class="list-toolbar">
         <div><h2>报文列表</h2><p>维护报文内容、变量绑定及关联 Topic。</p></div>
@@ -534,7 +534,7 @@ function confirmDelete() {
           <td class="management-body" :title="dataItemName(item)">{{ dataItemName(item) }}</td>
           <td class="management-body target-cell" :title="targetTopicsOf(item).join('、') || '未关联'">{{ targetTopicsOf(item).join('、') || '未关联' }}</td>
           <td><StatusBadge :status="item.status" /></td>
-          <td class="align-right"><div class="row-actions"><button class="link-button" @click="openFor(item, 'detail')">查看</button><button class="link-button" @click="openFor(item, 'edit')">配置</button><button class="link-button" @click="openFor(item, 'preview')">预览</button><button class="link-button danger-text" @click="openFor(item, 'delete')">删除</button></div></td>
+          <td class="align-right"><div class="row-actions"><button class="link-button" @click="openFor(item, 'detail')">查看</button><button v-if="canManage" class="link-button" @click="openFor(item, 'edit')">配置</button><button class="link-button" @click="openFor(item, 'preview')">预览</button><button v-if="canManage" class="link-button danger-text" @click="openFor(item, 'delete')">删除</button></div></td>
         </tr>
         <tr v-if="!visibleTemplates.length"><td colspan="6" class="empty-state">没有匹配的报文。</td></tr>
       </tbody></table></div>
@@ -573,10 +573,10 @@ function confirmDelete() {
           <pre class="code-block">{{ selected.content || '未配置报文内容' }}</pre>
         </DetailSection>
       </div>
-      <template #footer><button class="button secondary" @click="dialog = 'preview'; syncForm()">查看模板预览</button><button class="button secondary" @click="dialog = ''">关闭</button><button class="button primary" @click="dialog = 'edit'; activeTab = 'basic'; syncForm()">配置报文</button></template>
+      <template #footer><button class="button secondary" @click="dialog = 'preview'; syncForm()">查看模板预览</button><button class="button secondary" @click="dialog = ''">关闭</button><button v-if="canManage" class="button primary" @click="dialog = 'edit'; activeTab = 'basic'; syncForm()">配置报文</button></template>
     </AppModal>
 
-    <AppModal v-if="dialog === 'edit' && selected" :title="`配置报文 · ${selected.name}`" wide :before-close="confirmEditorClose" @close="dialog = ''">
+    <AppModal v-if="canManage && dialog === 'edit' && selected" :title="`配置报文 · ${selected.name}`" wide :before-close="confirmEditorClose" @close="dialog = ''">
       <template #header-actions><button class="button primary" :disabled="selected.status === 'PUBLISHED' || isPending(`update:messages:${selected.id}`)" @click="publish">{{ isPending(`update:messages:${selected.id}`) ? '正在发布…' : (selected.status === 'PUBLISHED' ? '已发布' : '发布报文') }}</button></template>
       <div class="message-context"><div><b>{{ selected.name }}</b><small>{{ selected.type }} · {{ selected.description }}</small></div></div>
       <div v-if="selected.status === 'PUBLISHED'" class="published-edit-notice"><b>当前报文已发布</b><span>修改后点击“保存草稿”将自动转为草稿，完成检查后可在顶部重新发布。</span></div>
@@ -641,8 +641,8 @@ function confirmDelete() {
       <template #footer><button class="button primary" :disabled="(activeTab === 'data' && !hasCompleteDataBinding()) || isPending(`update:messages:${selected.id}`)" @click="saveCurrentTab">{{ isPending(`update:messages:${selected.id}`) ? '正在保存…' : '保存草稿' }}</button></template>
     </AppModal>
 
-    <AppModal v-if="dialog === 'create'" title="新建报文" @close="dialog = ''"><p class="muted">先创建基础草稿，随后通过可搜索的三级选择器关联数据源、数据项和要素项。</p><div class="form-grid"><label>报文名称（必填）<input v-model="createForm.name" autofocus placeholder="例如 weather_station_message" @input="createError = ''"></label><label>报文类型（必填）<select v-model="createForm.type"><option value="JSON">JSON 报文</option><option value="FILE">FILE 报文</option></select></label><label>业务描述<input v-model="createForm.description" placeholder="简要说明报文用途"></label></div><div class="notice">创建后自动进入“数据关联”，草稿完成关联前不能发布。</div><p v-if="createError" class="status-badge negative">{{ createError }}</p><template #footer><button class="button secondary" @click="dialog = ''">取消</button><button class="button primary" :disabled="isPending('create:messages')" @click="submitCreate">{{ isPending('create:messages') ? '正在创建…' : '创建并关联数据' }}</button></template></AppModal>
-    <AppModal v-if="dialog === 'delete' && selected" title="删除报文" @close="dialog = ''"><p>确定删除报文 <b>{{ selected.name }}</b> 吗？删除后无法恢复。</p><div v-if="referenceTasks.length" class="notice"><b>当前不能删除：</b>该报文仍被 {{ referenceTasks.length }} 个任务引用：{{ referenceTasks.map(item => item.name).join('、') }}。</div><div v-else class="notice">该报文没有被任务引用，确认后将从 PostgreSQL 删除。</div><template #footer><button class="button secondary" @click="dialog = ''">取消</button><button class="button danger" :disabled="referenceTasks.length || isPending(`remove:messages:${selected.id}`)" @click="confirmDelete">{{ isPending(`remove:messages:${selected.id}`) ? '正在删除…' : '确认删除' }}</button></template></AppModal>
+    <AppModal v-if="canManage && dialog === 'create'" title="新建报文" @close="dialog = ''"><p class="muted">先创建基础草稿，随后通过可搜索的三级选择器关联数据源、数据项和要素项。</p><div class="form-grid"><label>报文名称（必填）<input v-model="createForm.name" autofocus placeholder="例如 weather_station_message" @input="createError = ''"></label><label>报文类型（必填）<select v-model="createForm.type"><option value="JSON">JSON 报文</option><option value="FILE">FILE 报文</option></select></label><label>业务描述<input v-model="createForm.description" placeholder="简要说明报文用途"></label></div><div class="notice">创建后自动进入“数据关联”，草稿完成关联前不能发布。</div><p v-if="createError" class="status-badge negative">{{ createError }}</p><template #footer><button class="button secondary" @click="dialog = ''">取消</button><button class="button primary" :disabled="isPending('create:messages')" @click="submitCreate">{{ isPending('create:messages') ? '正在创建…' : '创建并关联数据' }}</button></template></AppModal>
+    <AppModal v-if="canManage && dialog === 'delete' && selected" title="删除报文" @close="dialog = ''"><p>确定删除报文 <b>{{ selected.name }}</b> 吗？删除后无法恢复。</p><div v-if="referenceTasks.length" class="notice"><b>当前不能删除：</b>该报文仍被 {{ referenceTasks.length }} 个任务引用：{{ referenceTasks.map(item => item.name).join('、') }}。</div><div v-else class="notice">该报文没有被任务引用，确认后将从 PostgreSQL 删除。</div><template #footer><button class="button secondary" @click="dialog = ''">取消</button><button class="button danger" :disabled="referenceTasks.length || isPending(`remove:messages:${selected.id}`)" @click="confirmDelete">{{ isPending(`remove:messages:${selected.id}`) ? '正在删除…' : '确认删除' }}</button></template></AppModal>
     <AppModal v-if="dialog === 'preview' && selected" title="数据库中的报文模板" wide @close="dialog = ''"><p class="muted">以下内容来自当前报文资源；真实执行生成的最终报文请在执行日志查看。</p><pre class="code-block">{{ form.content || selected.content }}</pre><template #footer><button class="button secondary" @click="dialog = ''">关闭</button></template></AppModal>
   </main>
 </template>
