@@ -53,7 +53,7 @@ const selected = computed(() => props.templates.find(item => item.id === selecte
 const isPending = key => props.pendingActions.has(key)
 const sourceName = id => props.sources.find(item => item.id === id)?.name || '未关联'
 const dataItemName = item => item?.dataBinding?.dataItemName || sourceName(item?.sourceId)
-const dataSourceName = item => item?.dataBinding?.sourceName || '未关联'
+const dataSourceName = item => item?.dataBinding?.sourceName || props.sources.find(source => source.sourceCode === item?.dataBinding?.sourceCode)?.sourceCodeName || '未关联'
 const componentOf = id => props.components.find(item => item.id === id)
 const producerGroupsOf = component => Array.isArray(component?.producerGroups) && component.producerGroups.length ? component.producerGroups : (component?.producerGroup ? [component.producerGroup] : [])
 const topicsOf = component => Array.isArray(component?.topics) ? component.topics : []
@@ -525,12 +525,12 @@ function confirmDelete() {
     <section class="card message-list-card">
       <div class="list-toolbar">
         <div><h2>报文列表</h2><p>维护报文内容、变量绑定及关联 Topic。</p></div>
-        <div class="filters"><label><span>搜索报文</span><SearchInput v-model="keyword" aria-label="搜索报文" placeholder="名称、类型或 Topic" /></label></div>
+        <div class="filters"><label><span>搜索报文</span><SearchInput v-model="keyword" aria-label="搜索报文" placeholder="名称、数据源名称或 Topic" /></label></div>
       </div>
-      <div class="table-scroll"><table class="data-table management-table message-table"><thead><tr><th>报文名称</th><th>类型</th><th>关联数据项</th><th>关联 Topic</th><th>状态</th><th class="align-right">操作</th></tr></thead><tbody>
+      <div class="table-scroll"><table class="data-table management-table message-table"><thead><tr><th>报文名称</th><th>数据源名称</th><th>关联数据项</th><th>关联 Topic</th><th>状态</th><th class="align-right">操作</th></tr></thead><tbody>
         <tr v-for="item in visibleTemplates" :key="item.id">
           <td><button class="management-primary message-name" @click="openFor(item, 'detail')">{{ item.name }}</button><small>{{ item.description || '暂无业务描述' }}</small></td>
-          <td><span class="type-chip">{{ item.type }}</span></td>
+          <td class="management-body" :title="dataSourceName(item)">{{ dataSourceName(item) }}</td>
           <td class="management-body" :title="dataItemName(item)">{{ dataItemName(item) }}</td>
           <td class="management-body target-cell" :title="targetTopicsOf(item).join('、') || '未关联'">{{ targetTopicsOf(item).join('、') || '未关联' }}</td>
           <td><StatusBadge :status="item.status" /></td>
@@ -653,9 +653,9 @@ function confirmDelete() {
 .list-toolbar h2 { margin: 0; font-size: 17px; }.list-toolbar p { margin: 6px 0 0; color: #667085; }
 .filters { display: flex; align-items: flex-end; gap: 12px; }.filters label { display: block; color: #606266; font-size: 13px; font-weight: 600; }.filters label > span:first-child { display: block; margin-bottom: 7px; }
 .filters label { width: 300px; }
-.message-table { min-width: 980px; table-layout: fixed; }.message-table th:nth-child(1) { width: 200px; }.message-table th:nth-child(2) { width: 105px; }.message-table th:nth-child(3) { width: 170px; }.message-table th:nth-child(4) { width: 245px; }.message-table th:nth-child(5) { width: 90px; }.message-table th:nth-child(6) { width: 170px; }
+.message-table { min-width: 1060px; table-layout: fixed; }.message-table th:nth-child(1) { width: 200px; }.message-table th:nth-child(2) { width: 185px; }.message-table th:nth-child(3) { width: 170px; }.message-table th:nth-child(4) { width: 245px; }.message-table th:nth-child(5) { width: 90px; }.message-table th:nth-child(6) { width: 170px; }
 .message-table td { overflow: hidden; color: #4f6178; font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }.message-table th:first-child, .message-table td:first-child { padding-left: 20px; }.message-table th:last-child, .message-table td:last-child { padding-right: 20px; }.message-name { max-width: 100%; overflow: hidden; color: var(--management-link); font-size: 16px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-.type-chip { display: inline-block; padding: 3px 8px; border: 1px solid #b3d8ff; border-radius: 4px; background: #ecf5ff; color: #337ecc; font-size: 13px; }.target-cell { color: #4f6178 !important; font-family: inherit; font-size: 15px; font-weight: 450; }
+.target-cell { color: #4f6178 !important; font-family: inherit; font-size: 15px; font-weight: 450; }
 .message-detail { color: #465973; }
 .unified-detail { display: grid; gap: 16px; }
 .binding-overview { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); overflow: hidden; border: 1px solid #e3e8f0; border-radius: 11px; background: #fafbfd; }.binding-overview > div { min-width: 0; padding: 13px 15px; border-right: 1px solid #e7ecf3; }.binding-overview > div:last-child { border-right: 0; }.binding-overview span, .binding-overview b, .binding-overview code { display: block; }.binding-overview span { color: #78879b; font-size: 13px; }.binding-overview b { margin-top: 4px; color: #334a64; font-size: 15px; }.binding-overview code { margin-top: 3px; color: #586f8a; font: 600 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
