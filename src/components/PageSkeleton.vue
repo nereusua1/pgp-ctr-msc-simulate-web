@@ -14,7 +14,7 @@
 
 <style scoped>
 .page-skeleton { padding-top: 42px; }
-.skeleton { overflow: hidden; border-radius: 10px; background: #e9eef5; }
+.skeleton { overflow: hidden; border-radius: 8px; background: #e9eef5; }
 .skeleton::after { display: block; width: 45%; height: 100%; transform: translateX(-120%); background: linear-gradient(90deg, transparent, #ffffffa8, transparent); content: ''; animation: shimmer 1.6s ease-in-out infinite; }
 .skeleton-title { width: 170px; height: 34px; }
 .skeleton-copy { width: 360px; max-width: 70%; height: 16px; margin-top: 12px; }

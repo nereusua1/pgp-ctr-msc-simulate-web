@@ -36,15 +36,15 @@ const emit = defineEmits(['update:modelValue'])
   height: 38px;
   align-items: center;
   padding: 0 11px;
-  border: 1px solid #dcdfe6;
-  border-radius: 10px;
+  border: 1px solid #d9d9d9;
+  border-radius: 6px;
   background: #fff;
   transition: border-color .2s, box-shadow .2s;
 }
 
 .search-input:focus-within {
   border-color: var(--blue);
-  box-shadow: 0 0 0 3px rgb(53 108 255 / 10%);
+  box-shadow: 0 0 0 3px rgb(22 119 255 / 10%);
 }
 
 svg {

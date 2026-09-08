@@ -33,13 +33,13 @@ function submit() {
 </template>
 
 <style scoped>
-.login-page { display: grid; grid-template-columns: minmax(420px, 44%) 1fr; min-height: 100vh; background: #f5f7fb; }
+.login-page { display: grid; grid-template-columns: minmax(420px, 44%) 1fr; min-height: 100vh; background: #f5f5f5; }
 .login-brand-panel { position: relative; display: flex; flex-direction: column; min-height: 100vh; padding: 42px 7.5%; overflow: hidden; background: #15223d; color: #fff; }
 .login-brand-panel::before, .login-brand-panel::after { position: absolute; content: ''; border: 1px solid #ffffff14; border-radius: 50%; }
 .login-brand-panel::before { width: 420px; height: 420px; right: -180px; bottom: -120px; }
 .login-brand-panel::after { width: 260px; height: 260px; right: -70px; bottom: -40px; background: #48c9b60b; }
 .login-brand { position: relative; z-index: 1; display: flex; align-items: center; gap: 13px; }
-.login-brand > span, .mobile-logo { position: relative; display: grid; width: 44px; height: 44px; place-items: center; overflow: hidden; border-radius: 12px; background: #fff; color: #15223d; font-weight: 800; }
+.login-brand > span, .mobile-logo { position: relative; display: grid; width: 44px; height: 44px; place-items: center; overflow: hidden; border-radius: 8px; background: #fff; color: #15223d; font-weight: 800; }
 .login-brand > span::after { position: absolute; right: -4px; bottom: -4px; width: 15px; height: 15px; border-radius: 50%; background: #557ff3; content: ''; }
 .login-brand b { display: block; font-size: 18px; }
 .login-brand small { display: block; margin-top: 3px; color: #9fb0c3; font-size: 10px; letter-spacing: .08em; }
@@ -49,18 +49,18 @@ function submit() {
 .brand-copy span { display: block; margin-top: 22px; color: #aebcce; font-size: 15px; }
 .brand-foot { position: relative; z-index: 1; color: #8295a8; font-size: 12px; }
 .login-form-panel { display: grid; place-items: center; padding: 36px; }
-.login-card { width: min(420px, 100%); padding: 40px 42px; border: 1px solid #e1e7f0; border-radius: 16px; background: #fff; box-shadow: 0 22px 54px #13283f12; }
+.login-card { width: min(420px, 100%); padding: 40px 42px; border: 1px solid #f0f0f0; border-radius: 8px; background: #fff; box-shadow: 0 2px 8px #0000000f; }
 .login-card header { display: flex; align-items: center; gap: 13px; margin-bottom: 30px; }
 .login-card header small { display: block; margin-bottom: 16px; color: #4e72e8; font-size: 10px; font-weight: 750; letter-spacing: .14em; }
 .login-card h2 { margin: 0; color: #17243a; font-size: 25px; font-weight: 700; }
 .login-card header p { margin: 6px 0 0; color: #667085; }
 .mobile-logo { display: none; flex: 0 0 44px; }
 .login-card label { display: block; margin-top: 18px; color: #606266; font-size: 13px; font-weight: 600; }
-.login-card input { display: block; width: 100%; height: 44px; margin-top: 8px; padding: 0 13px; border: 1px solid #d9e1ec; border-radius: 10px; outline: none; background: #fff; color: #303b50; transition: border-color .2s, box-shadow .2s; }
-.login-card input:focus { border-color: #5578ea; box-shadow: 0 0 0 3px #5578ea1a; }
+.login-card input { display: block; width: 100%; height: 44px; margin-top: 8px; padding: 0 13px; border: 1px solid #d9d9d9; border-radius: 6px; outline: none; background: #fff; color: #262626; transition: border-color .2s, box-shadow .2s; }
+.login-card input:focus { border-color: #1677ff; box-shadow: 0 0 0 3px #1677ff1a; }
 .login-card input::placeholder { color: #a8abb2; }
-.login-button { width: 100%; height: 44px; margin-top: 26px; border: 1px solid #356cff; border-radius: 10px; background: #356cff; color: #fff; font-weight: 650; box-shadow: 0 10px 22px #356cff2b; transition: background .15s, transform .15s; }
-.login-button:hover:not(:disabled) { border-color: #285ce3; background: #285ce3; transform: translateY(-1px); }
+.login-button { width: 100%; height: 44px; margin-top: 26px; border: 1px solid #1677ff; border-radius: 6px; background: #1677ff; color: #fff; font-weight: 650; transition: background .15s; }
+.login-button:hover:not(:disabled) { border-color: #4096ff; background: #4096ff; }
 .login-button:disabled { opacity: .55; cursor: not-allowed; }
 .login-error { padding: 10px 12px; border: 1px solid #fab6b6; border-radius: 4px; background: #fef0f0; color: #c45656; font-size: 13px; }
 .login-hint { margin: 16px 0 0; color: #909399; font-size: 12px; text-align: center; }

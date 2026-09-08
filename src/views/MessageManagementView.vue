@@ -18,6 +18,10 @@ const pageSize = 10
 const activeTab = ref('basic')
 const dialog = ref('')
 const activeTargetComponentId = ref('')
+const groupSuggestionsOpen = ref(false)
+const activeGroupSuggestionIndex = ref(-1)
+const topicSuggestionsOpen = ref(false)
+const activeTopicSuggestionIndex = ref(-1)
 const createError = ref('')
 const form = reactive({})
 const createForm = reactive({ name: '', type: 'JSON', description: '' })
@@ -91,6 +95,18 @@ const activeDeliveryTarget = computed(() => (form.deliveryTargets || []).find(it
 const activeTargetComponent = computed(() => componentOf(activeTargetComponentId.value))
 const activeProducerGroups = computed(() => producerGroupsOf(activeTargetComponent.value))
 const activeTopics = computed(() => topicsOf(activeTargetComponent.value))
+const groupSuggestions = computed(() => {
+  const query = String(activeDeliveryTarget.value?.producerGroup || '').trim().toLowerCase()
+  return activeProducerGroups.value
+    .filter(group => !query || String(group).toLowerCase().includes(query))
+    .slice(0, 20)
+})
+const topicSuggestions = computed(() => {
+  const query = String(activeDeliveryTarget.value?.topic || '').trim().toLowerCase()
+  return activeTopics.value
+    .filter(topic => !query || String(topic).toLowerCase().includes(query))
+    .slice(0, 20)
+})
 const detectedTimeFields = computed(() => {
   try {
     const fields = new Map()
@@ -124,6 +140,12 @@ watch(totalPages, value => { if (page.value > value) page.value = value })
 watch(sourceKeyword, () => scheduleCatalogSearch('sources'))
 watch(dataItemKeyword, () => scheduleCatalogSearch('dataItems'))
 watch(elementKeyword, () => scheduleCatalogSearch('elements'))
+watch(activeTargetComponentId, () => {
+  groupSuggestionsOpen.value = false
+  activeGroupSuggestionIndex.value = -1
+  topicSuggestionsOpen.value = false
+  activeTopicSuggestionIndex.value = -1
+})
 watch(activeTab, tab => { if (tab === 'data') initializeDataSelector() })
 watch(() => form.type, type => {
   if (type === 'FILE' && !form.fileGeneration) {
@@ -257,6 +279,70 @@ function handleTargetTabKey(event, componentId) {
   const nextIndex = event.key === 'Home' ? 0 : event.key === 'End' ? ids.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + ids.length) % ids.length
   activeTargetComponentId.value = ids[nextIndex]
   requestAnimationFrame(() => document.querySelector(`[data-target-tab="${ids[nextIndex]}"]`)?.focus())
+}
+function openTopicSuggestions() {
+  groupSuggestionsOpen.value = false
+  activeGroupSuggestionIndex.value = -1
+  activeTopicSuggestionIndex.value = -1
+  topicSuggestionsOpen.value = true
+}
+function openGroupSuggestions() {
+  topicSuggestionsOpen.value = false
+  activeTopicSuggestionIndex.value = -1
+  activeGroupSuggestionIndex.value = -1
+  groupSuggestionsOpen.value = true
+}
+function chooseGroup(group) {
+  if (!activeDeliveryTarget.value) return
+  activeDeliveryTarget.value.producerGroup = group
+  groupSuggestionsOpen.value = false
+  activeGroupSuggestionIndex.value = -1
+}
+function handleGroupKeydown(event) {
+  if (event.key === 'Escape') {
+    groupSuggestionsOpen.value = false
+    activeGroupSuggestionIndex.value = -1
+    return
+  }
+  if (!['ArrowDown', 'ArrowUp', 'Enter'].includes(event.key)) return
+  if (event.key === 'Enter' && (!groupSuggestionsOpen.value || activeGroupSuggestionIndex.value < 0)) return
+  event.preventDefault()
+  groupSuggestionsOpen.value = true
+  if (event.key === 'Enter') {
+    chooseGroup(groupSuggestions.value[activeGroupSuggestionIndex.value])
+    return
+  }
+  const direction = event.key === 'ArrowDown' ? 1 : -1
+  const length = groupSuggestions.value.length
+  activeGroupSuggestionIndex.value = length
+    ? (activeGroupSuggestionIndex.value + direction + length) % length
+    : -1
+}
+function chooseTopic(topic) {
+  if (!activeDeliveryTarget.value) return
+  activeDeliveryTarget.value.topic = topic
+  topicSuggestionsOpen.value = false
+  activeTopicSuggestionIndex.value = -1
+}
+function handleTopicKeydown(event) {
+  if (event.key === 'Escape') {
+    topicSuggestionsOpen.value = false
+    activeTopicSuggestionIndex.value = -1
+    return
+  }
+  if (!['ArrowDown', 'ArrowUp', 'Enter'].includes(event.key)) return
+  if (event.key === 'Enter' && (!topicSuggestionsOpen.value || activeTopicSuggestionIndex.value < 0)) return
+  event.preventDefault()
+  topicSuggestionsOpen.value = true
+  if (event.key === 'Enter') {
+    chooseTopic(topicSuggestions.value[activeTopicSuggestionIndex.value])
+    return
+  }
+  const direction = event.key === 'ArrowDown' ? 1 : -1
+  const length = topicSuggestions.value.length
+  activeTopicSuggestionIndex.value = length
+    ? (activeTopicSuggestionIndex.value + direction + length) % length
+    : -1
 }
 function formatContent() {
   try { form.content = JSON.stringify(JSON.parse(form.content), null, 2); emit('notify', 'JSON 格式化与校验通过') }
@@ -577,7 +663,7 @@ function confirmDelete() {
     </AppModal>
 
     <AppModal v-if="canManage && dialog === 'edit' && selected" :title="`配置报文 · ${selected.name}`" wide :before-close="confirmEditorClose" @close="dialog = ''">
-      <template #header-actions><button class="button primary" :disabled="selected.status === 'PUBLISHED' || isPending(`update:messages:${selected.id}`)" @click="publish">{{ isPending(`update:messages:${selected.id}`) ? '正在发布…' : (selected.status === 'PUBLISHED' ? '已发布' : '发布报文') }}</button></template>
+      <template #header-actions><button v-if="selected.status !== 'PUBLISHED'" class="button primary" :disabled="isPending(`update:messages:${selected.id}`)" @click="publish">{{ isPending(`update:messages:${selected.id}`) ? '正在发布…' : '发布报文' }}</button></template>
       <div class="message-context"><div><b>{{ selected.name }}</b><small>{{ selected.type }} · {{ selected.description }}</small></div></div>
       <div v-if="selected.status === 'PUBLISHED'" class="published-edit-notice"><b>当前报文已发布</b><span>修改后点击“保存草稿”将自动转为草稿，完成检查后可在顶部重新发布。</span></div>
       <div class="config-step-navigation"><span class="config-step-label">配置步骤</span><span v-if="isEditorDirty" class="unsaved-indicator" role="status">未保存</span></div>
@@ -632,7 +718,7 @@ function confirmDelete() {
             </div>
             <div v-if="activeDeliveryTarget" :id="`target-panel-${activeTargetComponentId}`" class="target-editor" role="tabpanel">
               <div class="target-editor-heading"><div><b>{{ activeTargetComponent?.name }}</b><small>{{ activeTargetComponent?.namesrvAddr || activeTargetComponent?.nameServer }}</small></div><span>当前实例独立配置</span></div>
-              <div class="form-grid"><label>Producer Group<select v-model="activeDeliveryTarget.producerGroup" :disabled="!activeProducerGroups.length"><option disabled value="">请选择 Producer Group</option><option v-for="group in activeProducerGroups" :key="group" :value="group">{{ group }}</option></select></label><label>Topic<select v-model="activeDeliveryTarget.topic" :disabled="!activeTopics.length"><option disabled value="">请选择 Topic</option><option v-for="topic in activeTopics" :key="topic" :value="topic">{{ topic }}</option></select></label></div>
+              <div class="form-grid"><label class="group-field">Producer Group<div class="group-combobox"><input v-model.trim="activeDeliveryTarget.producerGroup" role="combobox" aria-autocomplete="list" :aria-expanded="groupSuggestionsOpen" :aria-controls="`group-suggestions-${activeTargetComponentId}`" :aria-activedescendant="activeGroupSuggestionIndex >= 0 ? `group-option-${activeTargetComponentId}-${activeGroupSuggestionIndex}` : undefined" placeholder="输入 Group 名称进行模糊搜索" autocomplete="off" @focus="$event.target.select(); openGroupSuggestions()" @input="openGroupSuggestions" @keydown="handleGroupKeydown" @blur="groupSuggestionsOpen = false"><div v-if="groupSuggestionsOpen" :id="`group-suggestions-${activeTargetComponentId}`" class="group-suggestions" role="listbox"><button v-for="(group, index) in groupSuggestions" :id="`group-option-${activeTargetComponentId}-${index}`" :key="group" type="button" role="option" :aria-selected="activeGroupSuggestionIndex === index" :class="{ active: activeGroupSuggestionIndex === index }" @mouseenter="activeGroupSuggestionIndex = index" @mousedown.prevent="chooseGroup(group)">{{ group }}</button><span v-if="!groupSuggestions.length" class="group-empty">没有匹配项，可直接使用当前输入</span></div></div><small class="group-hint">支持模糊搜索和手动输入，最多显示 20 条建议。</small></label><label class="topic-field">Topic<div class="topic-combobox"><input v-model.trim="activeDeliveryTarget.topic" role="combobox" aria-autocomplete="list" :aria-expanded="topicSuggestionsOpen" :aria-controls="`topic-suggestions-${activeTargetComponentId}`" :aria-activedescendant="activeTopicSuggestionIndex >= 0 ? `topic-option-${activeTargetComponentId}-${activeTopicSuggestionIndex}` : undefined" placeholder="输入 Topic 名称进行模糊搜索" autocomplete="off" @focus="$event.target.select(); openTopicSuggestions()" @input="openTopicSuggestions" @keydown="handleTopicKeydown" @blur="topicSuggestionsOpen = false"><div v-if="topicSuggestionsOpen" :id="`topic-suggestions-${activeTargetComponentId}`" class="topic-suggestions" role="listbox"><button v-for="(topic, index) in topicSuggestions" :id="`topic-option-${activeTargetComponentId}-${index}`" :key="topic" type="button" role="option" :aria-selected="activeTopicSuggestionIndex === index" :class="{ active: activeTopicSuggestionIndex === index }" @mouseenter="activeTopicSuggestionIndex = index" @mousedown.prevent="chooseTopic(topic)">{{ topic }}</button><span v-if="!topicSuggestions.length" class="topic-empty">没有匹配项，可直接使用当前输入</span></div></div><small class="topic-hint">支持模糊搜索和手动输入，最多显示 20 条建议。</small></label></div>
             </div>
           </template>
         </div>
@@ -658,8 +744,8 @@ function confirmDelete() {
 .target-cell { color: #4f6178 !important; font-family: inherit; font-size: 15px; font-weight: 450; }
 .message-detail { color: #465973; }
 .unified-detail { display: grid; gap: 16px; }
-.binding-overview { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); overflow: hidden; border: 1px solid #e3e8f0; border-radius: 11px; background: #fafbfd; }.binding-overview > div { min-width: 0; padding: 13px 15px; border-right: 1px solid #e7ecf3; }.binding-overview > div:last-child { border-right: 0; }.binding-overview span, .binding-overview b, .binding-overview code { display: block; }.binding-overview span { color: #78879b; font-size: 13px; }.binding-overview b { margin-top: 4px; color: #334a64; font-size: 15px; }.binding-overview code { margin-top: 3px; color: #586f8a; font: 600 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
-.linked-elements-card { overflow: hidden; margin-top: 12px; border: 1px solid #e0e6ef; border-radius: 11px; background: #fff; }
+.binding-overview { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); overflow: hidden; border: 1px solid #f0f0f0; border-radius: 8px; background: #fafafa; }.binding-overview > div { min-width: 0; padding: 13px 15px; border-right: 1px solid #f0f0f0; }.binding-overview > div:last-child { border-right: 0; }.binding-overview span, .binding-overview b, .binding-overview code { display: block; }.binding-overview span { color: #8c8c8c; font-size: 13px; }.binding-overview b { margin-top: 4px; color: #262626; font-size: 15px; }.binding-overview code { margin-top: 3px; color: #595959; font: 600 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.linked-elements-card { overflow: hidden; margin-top: 12px; border: 1px solid #f0f0f0; border-radius: 8px; background: #fff; }
 .linked-elements-heading { display: flex; min-height: 42px; align-items: center; justify-content: space-between; gap: 16px; padding: 0 15px; border-bottom: 1px solid #e6ebf2; background: #f7f9fc; }
 .linked-elements-heading b { color: #334a64; font-size: 15px; font-weight: 650; }
 .linked-elements-heading span { color: #64758c; font-size: 13px; font-weight: 600; }
@@ -667,11 +753,11 @@ function confirmDelete() {
 .linked-elements-list > span { min-width: 0; padding: 11px 15px; border-right: 1px solid #e8edf4; border-bottom: 1px solid #e8edf4; background: #fff; }
 .linked-elements-list > span:nth-child(3n) { border-right: 0; }
 .linked-elements-list code, .linked-elements-list b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.linked-elements-list code { color: #2d5fcf; font: 650 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.linked-elements-list code { color: #1677ff; font: 650 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .linked-elements-list b { margin-top: 3px; color: #40546d; font-size: 14px; font-weight: 600; line-height: 1.5; }
 .linked-elements-empty { padding: 18px; color: #7d8a9d; text-align: center; font-size: 14px; }
-.inline-empty { padding: 17px; border: 1px dashed #d8e0eb; border-radius: 10px; color: #7d8a9d; text-align: center; background: #fafbfd; font-size: 14px; }
-.message-detail .code-block { max-height: 320px; margin: 0; padding: 17px 18px; border-color: #273752; border-radius: 9px; background: #19253a; color: #d9e3f0; font-size: 14px; line-height: 1.65; }
+.inline-empty { padding: 17px; border: 1px dashed #d9d9d9; border-radius: 8px; color: #8c8c8c; text-align: center; background: #fafafa; font-size: 14px; }
+.message-detail .code-block { max-height: 320px; margin: 0; padding: 17px 18px; border-color: #30343b; border-radius: 6px; background: #1f2329; color: #d9e3f0; font-size: 14px; line-height: 1.65; }
 body .page .message-detail .data-table th { padding: 12px 14px; background: #f7f9fc; color: #687890; font-size: 13px; font-weight: 650; letter-spacing: .01em; }
 body .page .message-detail .data-table td { padding: 15px 14px; color: #4d5f77; font-size: 15px; font-weight: 400; line-height: 1.55; }
 body .page .message-detail .detail-path { color: #2c486d; font: 600 14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
@@ -680,15 +766,16 @@ body .page .message-detail .detail-format { color: #5c6d84; font: 500 14px/1.55 
 .config-step-navigation { display: flex; align-items: center; justify-content: space-between; margin-top: 2px; }
 .config-step-label { color: #526078; font-size: var(--type-form-label); font-weight: 700; }
 .unsaved-indicator { display: inline-flex; align-items: center; gap: 6px; color: var(--amber); font-size: var(--type-form-label); font-weight: 650; }.unsaved-indicator::before { width: 6px; height: 6px; border-radius: 50%; background: currentColor; content: ''; }
-.tabs { margin-top: 7px; }.tabs button { min-height: var(--control-height); border-radius: 8px 8px 0 0; font-size: var(--type-form-body); font-weight: 600; }.config-panel { min-height: 360px; }
+.tabs { margin-top: 7px; }.tabs button { min-height: var(--control-height); border-radius: 6px 6px 0 0; font-size: var(--type-form-body); font-weight: 600; }.config-panel { min-height: 360px; padding: 18px; border: 1px solid #f0f0f0; border-radius: 8px; background: #fff; }
 .config-panel .form-grid label { font-size: var(--type-form-label); }.config-panel .form-grid input, .config-panel .form-grid select { min-height: var(--control-height); color: var(--text); font-size: var(--type-form-body); }.config-panel .code-editor { font-size: var(--type-form-body); }
-.published-edit-notice { display: flex; align-items: center; gap: 12px; margin: 0 0 12px; padding: 11px 14px; border: 1px solid #ead5a8; border-radius: var(--radius-sm); background: var(--amber-soft); color: var(--amber); font-size: var(--type-form-label); }.published-edit-notice b { flex: 0 0 auto; color: #9a691d; }.published-edit-notice span { color: #7d622f; }
-.data-linkage-grid { display: grid; grid-template-columns: 1.05fr 1fr 1.2fr; gap: 12px; }.linkage-step { min-width: 0; padding: 15px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fafbfd; }.linkage-step.disabled { opacity: .62; }.linkage-step h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 4px; color: var(--ink); font-size: 15px; }.linkage-step h3 span { display: grid; width: 24px; height: 24px; place-items: center; border-radius: 50%; background: var(--blue); color: #fff; font-size: 12px; }.linkage-step > p { min-height: 40px; margin: 0 0 10px; color: var(--muted); font-size: var(--type-form-label); }.catalog-search { display: block; color: #526078; font-size: var(--type-form-label); font-weight: 650; }.catalog-search input { width: 100%; height: var(--control-height); margin-top: 7px; padding: 0 11px; border: 1px solid #d9e0ea; border-radius: var(--radius-sm); outline: 0; background: #fff; color: var(--text); font-size: var(--type-form-body); }.catalog-search input:focus { border-color: #6887e9; box-shadow: 0 0 0 3px #356cff13; }.catalog-options, .element-options { max-height: 270px; margin-top: 8px; overflow: auto; }.catalog-options > button { display: grid; width: 100%; gap: 3px; padding: 10px 11px; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; text-align: left; }.catalog-options > button:hover, .catalog-options > button.selected { border-color: #a9bcf5; background: var(--blue-soft); }.catalog-options code { overflow: hidden; color: var(--management-link); font-size: var(--type-form-body); text-overflow: ellipsis; }.catalog-options b { overflow: hidden; color: var(--ink); font-size: var(--type-form-body); text-overflow: ellipsis; white-space: nowrap; }.catalog-options small, .element-options small { color: var(--muted); font-size: var(--type-form-label); }.catalog-empty { padding: 22px 8px; color: var(--muted); text-align: center; font-size: var(--type-form-body); }.select-all { width: 100%; margin-top: 8px; padding: 9px 10px; border: 1px solid #a9bcf5; border-radius: var(--radius-sm); background: var(--blue-soft); color: var(--management-link); font-size: var(--type-form-label); text-align: left; }.element-options > label { display: flex; align-items: flex-start; gap: 8px; padding: 10px; border: 1px solid transparent; border-radius: var(--radius-sm); cursor: pointer; }.element-options > label:hover, .element-options > label.selected { border-color: #a9bcf5; background: var(--blue-soft); }.element-options input { width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--blue); }.element-options span { min-width: 0; }.element-options b, .element-options small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.element-options b { font-size: var(--type-form-body); }.binding-summary { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-top: 14px; padding: 14px 16px; border: 1px solid #a9bcf5; border-radius: var(--radius-md); background: var(--blue-soft); }.binding-summary b, .binding-summary small { display: block; }.binding-summary b { font-size: var(--type-form-body); }.binding-summary small { margin-top: 3px; color: var(--text); font-size: var(--type-form-label); }.binding-summary strong { flex: 0 0 auto; color: var(--management-link); font-size: var(--type-form-body); }.selected-element-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }.selected-element-chips span { padding: 4px 8px; border: 1px solid #a9bcf5; border-radius: 7px; background: #fff; color: var(--management-link); font-size: var(--type-form-label); }
+.published-edit-notice { display: flex; align-items: center; gap: 12px; margin: 0 0 12px; padding: 11px 14px; border: 1px solid #ffd591; border-radius: 6px; background: var(--amber-soft); color: #d46b08; font-size: var(--type-form-label); }.published-edit-notice b { flex: 0 0 auto; color: #ad4e00; }.published-edit-notice span { color: #874d00; }
+.data-linkage-grid { display: grid; grid-template-columns: 1.05fr 1fr 1.2fr; gap: 12px; }.linkage-step { min-width: 0; padding: 15px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fafafa; }.linkage-step.disabled { opacity: .62; }.linkage-step h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 4px; color: var(--ink); font-size: 15px; }.linkage-step h3 span { display: grid; width: 24px; height: 24px; place-items: center; border-radius: 50%; background: var(--blue); color: #fff; font-size: 12px; }.linkage-step > p { min-height: 40px; margin: 0 0 10px; color: var(--muted); font-size: var(--type-form-label); }.catalog-search { display: block; color: #526078; font-size: var(--type-form-label); font-weight: 650; }.catalog-search input { width: 100%; height: var(--control-height); margin-top: 7px; padding: 0 11px; border: 1px solid #d9d9d9; border-radius: var(--radius-sm); outline: 0; background: #fff; color: var(--text); font-size: var(--type-form-body); }.catalog-search input:focus { border-color: #1677ff; box-shadow: 0 0 0 3px #1677ff1a; }.catalog-options, .element-options { max-height: 270px; margin-top: 8px; overflow: auto; }.catalog-options > button { display: grid; width: 100%; gap: 3px; padding: 10px 11px; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; text-align: left; }.catalog-options > button:hover, .catalog-options > button.selected { border-color: #91caff; background: var(--blue-soft); }.catalog-options code { overflow: hidden; color: var(--management-link); font-size: var(--type-form-body); text-overflow: ellipsis; }.catalog-options b { overflow: hidden; color: var(--ink); font-size: var(--type-form-body); text-overflow: ellipsis; white-space: nowrap; }.catalog-options small, .element-options small { color: var(--muted); font-size: var(--type-form-label); }.catalog-empty { padding: 22px 8px; color: var(--muted); text-align: center; font-size: var(--type-form-body); }.select-all { width: 100%; margin-top: 8px; padding: 9px 10px; border: 1px solid #91caff; border-radius: var(--radius-sm); background: var(--blue-soft); color: var(--management-link); font-size: var(--type-form-label); text-align: left; }.element-options > label { display: flex; align-items: flex-start; gap: 8px; padding: 10px; border: 1px solid transparent; border-radius: var(--radius-sm); cursor: pointer; }.element-options > label:hover, .element-options > label.selected { border-color: #91caff; background: var(--blue-soft); }.element-options input { width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--blue); }.element-options span { min-width: 0; }.element-options b, .element-options small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.element-options b { font-size: var(--type-form-body); }.binding-summary { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-top: 14px; padding: 14px 16px; border: 1px solid #91caff; border-radius: var(--radius-md); background: var(--blue-soft); }.binding-summary b, .binding-summary small { display: block; }.binding-summary b { font-size: var(--type-form-body); }.binding-summary small { margin-top: 3px; color: var(--text); font-size: var(--type-form-label); }.binding-summary strong { flex: 0 0 auto; color: var(--management-link); font-size: var(--type-form-body); }.selected-element-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }.selected-element-chips span { padding: 4px 8px; border: 1px solid #91caff; border-radius: 4px; background: #fff; color: var(--management-link); font-size: var(--type-form-label); }
 .target-form { display: grid; gap: 18px; }.target-instance-field { min-width: 0; margin: 0; padding: 0; border: 0; }.target-instance-field legend { margin-bottom: 9px; color: #526078; font-size: var(--type-form-label); font-weight: 650; }.instance-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }.instance-option { display: flex; align-items: center; min-width: 0; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; cursor: pointer; transition: border-color .2s, background .2s; }.instance-option:hover { border-color: #a9bcf5; }.instance-option.selected { border-color: var(--blue); background: var(--blue-soft); }.instance-option input { width: 16px; height: 16px; margin: 0; accent-color: var(--blue); }.instance-option span { min-width: 0; }.instance-option b, .instance-option small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.instance-option b { color: var(--ink); font-size: var(--type-form-body); }.instance-option small { margin-top: 3px; color: var(--muted); font-size: var(--type-form-label); }.field-error { margin: 8px 0 0; color: var(--red); font-size: var(--type-form-label); }
 .target-tabs-label { margin-bottom: -11px; color: #526078; font-size: var(--type-form-label); font-weight: 650; }
 .target-tabs { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; border-bottom: 1px solid var(--line); }.target-tabs button { min-width: 210px; padding: 10px 13px; border: 1px solid var(--line); border-bottom: 2px solid transparent; border-radius: var(--radius-sm) var(--radius-sm) 0 0; background: #f7f9fc; color: var(--text); text-align: left; }.target-tabs button:hover { border-color: #a9bcf5; }.target-tabs button.active { border-color: #a9bcf5; border-bottom-color: var(--blue); background: var(--blue-soft); color: var(--ink); }.target-tabs span, .target-tabs small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.target-tabs span { font-size: var(--type-form-body); font-weight: 650; }.target-tabs small { margin-top: 4px; color: var(--muted); font-size: var(--type-form-label); }.target-editor { padding: 16px; border: 1px solid #a9bcf5; border-radius: var(--radius-md); background: #f8faff; }.target-editor-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }.target-editor-heading b, .target-editor-heading small { display: block; }.target-editor-heading b { color: var(--ink); font-size: 15px; }.target-editor-heading small { margin-top: 3px; color: var(--muted); font-size: var(--type-form-label); }.target-editor-heading > span { padding: 4px 8px; border-radius: 7px; background: var(--blue-soft); color: var(--management-link); font-size: var(--type-form-label); }
+.topic-field, .group-field { min-width: 0; }.topic-combobox, .group-combobox { position: relative; margin-top: 7px; }.config-panel .form-grid .topic-combobox input, .config-panel .form-grid .group-combobox input { margin-top: 0; }.topic-suggestions, .group-suggestions { position: absolute; z-index: 8; top: calc(100% + 4px); right: 0; left: 0; max-height: 240px; padding: 4px; overflow-y: auto; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; box-shadow: 0 6px 16px #0000001f; }.topic-suggestions button, .group-suggestions button { display: block; width: 100%; padding: 9px 10px; overflow: hidden; border: 0; border-radius: 4px; background: transparent; color: var(--text); font: 500 var(--type-form-body)/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: left; text-overflow: ellipsis; white-space: nowrap; }.topic-suggestions button:hover, .topic-suggestions button.active, .group-suggestions button:hover, .group-suggestions button.active { background: var(--blue-soft); color: var(--management-link); }.topic-empty, .group-empty { display: block; padding: 10px; color: var(--muted); font-size: var(--type-form-label); text-align: center; }.topic-hint, .group-hint { display: block; margin-top: 6px; color: var(--muted); font-size: var(--type-form-label); font-weight: 400; }
 .time-binding-guide { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; align-items: center; gap: 12px; margin-bottom: 14px; padding: 14px 16px; border: 1px solid #a9bcf5; border-radius: var(--radius-md); background: var(--blue-soft); }.time-binding-guide span, .time-binding-guide b { display: block; }.time-binding-guide span { margin-bottom: 3px; color: var(--text); font-size: var(--type-form-label); }.time-binding-guide b { color: var(--ink); font-size: var(--type-form-body); }.time-binding-guide strong { color: var(--management-link); font-size: var(--type-form-body); white-space: nowrap; }.time-binding-table { min-width: 960px; table-layout: fixed; }.time-binding-table th:nth-child(1) { width: 62px; }.time-binding-table th:nth-child(2) { width: 145px; }.time-binding-table th:nth-child(3) { width: 320px; }.time-binding-table th:nth-child(4) { width: 190px; }.time-binding-table th:nth-child(5) { width: 220px; }.time-binding-table td { height: 62px; }.time-binding-table tbody tr.active td { background: #f5f8ff; }.time-binding-table input[type='checkbox'] { width: 16px; height: 16px; accent-color: var(--blue); }.time-binding-table code { color: var(--management-link); font-size: var(--type-form-body); }
-.time-strategy-control { position: relative; display: flex; width: 100%; min-width: 190px; height: var(--control-height); align-items: center; padding: 0 34px 0 11px; border: 1px solid #d9e0ea; border-radius: var(--radius-sm); background: #fff; transition: border-color .18s, box-shadow .18s, background .18s; }.time-strategy-control:hover { border-color: #bdc9dc; }.time-strategy-control:focus-within { border-color: #6887e9; box-shadow: 0 0 0 3px #356cff13; }.time-strategy-control::after { position: absolute; top: 50%; right: 13px; width: 6px; height: 6px; border-right: 1.5px solid #606266; border-bottom: 1.5px solid #606266; content: ''; pointer-events: none; transform: translateY(-70%) rotate(45deg); }.time-strategy-control > b { display: block; min-width: 0; overflow: hidden; color: var(--text); font-size: var(--type-form-body); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }.time-strategy-control.disabled { background: #f5f7fa; }.time-strategy-control.disabled > b { color: var(--quiet); }.time-strategy-control.disabled::after { border-color: var(--quiet); }.time-strategy-select { position: absolute; z-index: 1; inset: 0; width: 100%; height: 100%; cursor: pointer; opacity: 0; }.time-strategy-select:disabled { cursor: not-allowed; }.binding-help { margin: 12px 0 0; color: var(--text); font-size: var(--type-form-label); }.binding-help code { color: var(--management-link); }
+.time-strategy-control { position: relative; display: flex; width: 100%; min-width: 190px; height: var(--control-height); align-items: center; padding: 0 34px 0 11px; border: 1px solid #d9d9d9; border-radius: var(--radius-sm); background: #fff; transition: border-color .18s, box-shadow .18s, background .18s; }.time-strategy-control:hover { border-color: #91caff; }.time-strategy-control:focus-within { border-color: #1677ff; box-shadow: 0 0 0 3px #1677ff1a; }.time-strategy-control::after { position: absolute; top: 50%; right: 13px; width: 6px; height: 6px; border-right: 1.5px solid #606266; border-bottom: 1.5px solid #606266; content: ''; pointer-events: none; transform: translateY(-70%) rotate(45deg); }.time-strategy-control > b { display: block; min-width: 0; overflow: hidden; color: var(--text); font-size: var(--type-form-body); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }.time-strategy-control.disabled { background: #f5f5f5; }.time-strategy-control.disabled > b { color: var(--quiet); }.time-strategy-control.disabled::after { border-color: var(--quiet); }.time-strategy-select { position: absolute; z-index: 1; inset: 0; width: 100%; height: 100%; cursor: pointer; opacity: 0; }.time-strategy-select:disabled { cursor: not-allowed; }.binding-help { margin: 12px 0 0; color: var(--text); font-size: var(--type-form-label); }.binding-help code { color: var(--management-link); }
 .binding-section-heading { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--line); }.binding-section-heading h2 { margin: 0; color: var(--ink); font-size: 17px; }.binding-section-heading p { margin: 5px 0 0; color: var(--muted); font-size: var(--type-form-label); }.value-binding-editor { display: grid; grid-template-columns: minmax(260px, 1.7fr) minmax(170px, 1fr) minmax(130px, .7fr) minmax(170px, 1fr) auto; align-items: end; gap: 10px; margin: 14px 0; padding: 15px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fafbfd; }.value-binding-editor label { min-width: 0; color: #526078; font-size: var(--type-form-label); font-weight: 650; }.value-binding-editor select, .value-binding-editor input { width: 100%; height: var(--control-height); margin-top: 7px; padding: 0 11px; border: 1px solid #d9e0ea; border-radius: var(--radius-sm); background: #fff; color: var(--text); font-size: var(--type-form-body); }.value-binding-editor .button { height: var(--control-height); white-space: nowrap; }.value-binding-table { min-width: 800px; }.value-binding-table code { color: var(--management-link); font-size: var(--type-form-body); }
 .file-template-panel .form-grid { margin-top: 18px; }
 .file-template-panel label small { display: block; margin-top: 6px; color: var(--muted); font-size: var(--type-form-label); font-weight: 400; }

@@ -27,5 +27,5 @@ async function copy() {
 <style scoped>
 .copy-value { display: flex; min-width: 0; align-items: center; gap: 9px; }
 code { min-width: 0; overflow: hidden; color: #344b66; font: 600 14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
-button { flex: none; padding: 1px 0; border: 0; background: transparent; color: #2d5fcf; font-size: 13px; font-weight: 650; }
+button { flex: none; padding: 1px 0; border: 0; background: transparent; color: #1677ff; font-size: 13px; font-weight: 650; }
 </style>

@@ -482,8 +482,8 @@ onMounted(initialize)
   display: grid;
   min-height: 100vh;
   place-items: center;
-  background: #f5f7fb;
-  color: #758299;
+  background: #f5f5f5;
+  color: #8c8c8c;
 }
 
 .authentication-loading div {
@@ -496,11 +496,11 @@ onMounted(initialize)
   height: 46px;
   margin: 0 auto 14px;
   place-items: center;
-  border-radius: 13px;
-  background: #15223d;
+  border-radius: 8px;
+  background: #1677ff;
   color: #fff;
   font-weight: 800;
-  box-shadow: 0 12px 30px #1d31521f;
+  box-shadow: 0 2px 8px #00000014;
 }
 
 .authentication-loading p {
@@ -514,16 +514,16 @@ onMounted(initialize)
 }
 
 .account-name {
-  color: #46576f;
+  color: #434343;
   font-size: 14px;
   font-weight: 650;
 }
 
 .account-role {
   padding: 3px 7px;
-  border-radius: 999px;
-  background: #eef2ff;
-  color: #5268b8;
+  border-radius: 4px;
+  background: #e6f4ff;
+  color: #1677ff;
   font-size: 11px;
   font-weight: 650;
 }
@@ -534,8 +534,8 @@ onMounted(initialize)
   height: 34px;
   place-items: center;
   border-radius: 50%;
-  background: #e8edff;
-  color: #4462c5;
+  background: #e6f4ff;
+  color: #1677ff;
   font-size: 12px;
   font-weight: 750;
 }
@@ -546,16 +546,16 @@ onMounted(initialize)
   gap: 6px;
   padding: 8px 9px;
   border: 0;
-  border-radius: 8px;
+  border-radius: 6px;
   background: transparent;
-  color: #66778f;
+  color: #595959;
   font-size: 13px;
   font-weight: 550;
 }
 
 .logout-button:hover {
-  background: #f0f3f8;
-  color: #315ecc;
+  background: #f5f5f5;
+  color: #1677ff;
 }
 
 .logout-button:disabled {

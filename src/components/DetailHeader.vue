@@ -21,7 +21,7 @@ defineProps({
 </template>
 
 <style scoped>
-.detail-header { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 28px; padding: 21px 22px; border: 1px solid #d9e4f2; border-radius: 14px; background: linear-gradient(120deg, #f8fbff, #f1f5fb); }
+.detail-header { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 28px; padding: 20px 22px; border: 1px solid #f0f0f0; border-radius: 8px; background: #fff; }
 .detail-header-main { min-width: 0; }
 .detail-eyebrow { display: block; margin-bottom: 5px; color: #738299; font-size: 13px; font-weight: 650; }
 h2 { margin: 0; color: #203650; font-size: 21px; font-weight: 720; line-height: 1.4; letter-spacing: -.02em; overflow-wrap: anywhere; }
