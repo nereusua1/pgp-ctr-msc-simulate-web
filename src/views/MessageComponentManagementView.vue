@@ -1,11 +1,17 @@
 <script setup>
-import { computed, reactive, ref } from 'vue'
+import {useFormLeaveGuard} from '../form-leave-guard.mjs'
+import ListFilters from '../components/ListFilters.vue'
+import ListPagination from '../components/ListPagination.vue'
+import { computed, reactive, ref, watch } from 'vue'
+import SearchInput from '../components/SearchInput.vue'
+import {useListState} from '../list-state.mjs'
 import AppModal from '../components/AppModal.vue'
 import AppIcon from '../components/AppIcon.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import DetailHeader from '../components/DetailHeader.vue'
 import DetailGrid from '../components/DetailGrid.vue'
 import DetailSection from '../components/DetailSection.vue'
+import TruncatedText from '../components/TruncatedText.vue'
 import CopyValue from '../components/CopyValue.vue'
 import { resetMessageComponentForCreate } from '../message-component-form.mjs'
 import { formatDateTime } from '../date-time.mjs'
@@ -17,9 +23,17 @@ const props = defineProps({
   pendingActions: { type: Object, default: () => new Set() },
   canManage: { type: Boolean, default: false },
   canCheckConnection: { type: Boolean, default: false }
+  ,connectionChecks: {type: Object, default: () => ({})}
 })
-const emit = defineEmits(['create', 'update', 'remove', 'check-component'])
+const emit = defineEmits(['editing-state', 'create', 'update', 'remove', 'check-component'])
 const dialog = ref('')
+const {keyword, status, page, pageSize} = useListState('components')
+const filteredComponents = computed(() => props.components.filter(item =>
+  (status.value === 'ALL' || item.status === status.value) &&
+  [item.name, namesrvAddrOf(item), ...(item.topics || [])].some(value => String(value || '').toLowerCase().includes(keyword.value.trim().toLowerCase()))))
+const totalPages = computed(() => Math.max(1, Math.ceil(filteredComponents.value.length / pageSize.value)))
+const visibleComponents = computed(() => filteredComponents.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
+watch(totalPages, value => { if (page.value > value) page.value = value })
 const selectedItem = ref(null)
 const formError = ref('')
 const groupDraft = ref('')
@@ -32,9 +46,9 @@ const form = reactive({ id: '', code: null, name: '', namesrvAddr: '', instanceI
 const isPending = key => props.pendingActions.has(key)
 const referenceTemplates = computed(() => props.templates.filter(item => {
   const componentIds = Array.isArray(item.componentIds) && item.componentIds.length ? item.componentIds : [item.componentId]
-  return componentIds.includes(selectedItem.value?.id)
+  return componentIds.includes(selectedItem.value?.id) || item.deliveryTargets?.some(target => target.componentId === selectedItem.value?.id)
 }))
-const referenceTasks = computed(() => props.tasks.filter(item => item.componentId === selectedItem.value?.id))
+const referenceTasks = computed(() => props.tasks.filter(item => item.componentId === selectedItem.value?.id || referenceTemplates.value.some(template => template.id === item.messageId)))
 
 function producerGroupsOf(item) {
   if (Array.isArray(item?.producerGroups)) return item.producerGroups.filter(Boolean)
@@ -165,30 +179,45 @@ function submit() {
   delete item.producerGroup
   delete item.nameServer
   delete item.secretConfigured
-  emit(form.id ? 'update' : 'create', item)
-  dialog.value = ''
+  const saved = result => {
+    if (result?.success === false) { formError.value = result.error || '保存失败，输入已保留'; return }
+    dialog.value = ''
+  }
+  emit(form.id ? 'update' : 'create', item, saved, error => { formError.value = error })
 }
+
+const {dirty: formDirty, confirmClose: confirmFormClose} = useFormLeaveGuard(
+  () => dialog.value === 'edit',
+  () => JSON.stringify({form, group: groupDraft.value, topic: topicDraft.value, editing: editingValue.value}),
+  value => emit('editing-state', value)
+)
 </script>
 
 <template>
   <main class="page">
-    <div class="page-heading"><div><h1>消息组件管理</h1><p>维护 RocketMQ 实例鉴权、Producer Group 与 Topic，连接验证由后端使用真实凭证访问服务端。</p></div><button v-if="canManage" class="button primary" @click="openCreate"><AppIcon name="plus" :size="16" />新建消息组件</button></div>
+    <div class="page-heading"><div><h1>消息云组件</h1><p>维护 RocketMQ 实例鉴权、Producer Group 与 Topic，连接验证由后端使用真实凭证访问服务端。</p></div><button v-if="canManage" class="button primary" @click="openCreate"><AppIcon name="plus" :size="16" />新建消息云组件</button></div>
     <section class="card instance-list-card">
-      <div class="card-heading"><div><h2>MQ 实例列表</h2><p>每行对应一个独立 MQ 实例；点击实例名称查看连接与路由配置。</p></div><span class="muted">共 {{ components.length }} 个实例</span></div>
-      <div class="table-scroll"><table class="data-table management-table instance-table"><thead><tr><th>MQ 实例</th><th>NAMESRV_ADDR</th><th>Producer Group</th><th>Topic</th><th>状态</th><th class="align-right">操作</th></tr></thead><tbody>
-        <tr v-for="item in components" :key="item.id">
+      <ListFilters>
+        <label>搜索组件<SearchInput v-model="keyword" aria-label="搜索组件" placeholder="名称、地址或 Topic" /></label>
+        <label>状态<select v-model="status"><option value="ALL">全部</option><option value="ENABLED">已启用</option><option value="DISABLED">已停用</option></select></label>
+        <button v-if="keyword || status !== 'ALL'" class="link-button" @click="keyword = ''; status = 'ALL'">清除筛选</button>
+      </ListFilters>
+      <div class="table-scroll"><table class="data-table management-table instance-table"><thead><tr><th>MQ 实例</th><th class="responsive-low">NAMESRV_ADDR</th><th class="responsive-low">Producer Group</th><th>Topic</th><th>状态</th><th class="align-right">操作</th></tr></thead><tbody>
+        <tr v-for="item in visibleComponents" :key="item.id">
           <td><button class="management-primary instance-name" @click="openDetail(item)">{{ item.name }}</button><small>{{ item.type }}</small></td>
-          <td><code>{{ namesrvAddrOf(item) }}</code></td>
-          <td><span v-if="producerGroupsOf(item).length" class="summary-chip">{{ producerGroupsOf(item)[0] }}</span><span v-if="producerGroupsOf(item).length > 1" class="more-count">+{{ producerGroupsOf(item).length - 1 }}</span><span v-if="!producerGroupsOf(item).length" class="muted">未配置</span></td>
+          <td class="responsive-low"><TruncatedText :text="namesrvAddrOf(item)" code copyable /></td>
+          <td class="responsive-low"><span v-if="producerGroupsOf(item).length" class="summary-chip">{{ producerGroupsOf(item)[0] }}</span><span v-if="producerGroupsOf(item).length > 1" class="more-count">+{{ producerGroupsOf(item).length - 1 }}</span><span v-if="!producerGroupsOf(item).length" class="muted">未配置</span></td>
           <td><span class="count-summary"><b>{{ item.topics?.length || 0 }}</b> 个 Topic</span></td>
-          <td><StatusBadge :status="item.status" /></td>
+          <td><StatusBadge :status="item.status" /><small>{{ connectionChecks[item.id + ':'] ? (connectionChecks[item.id + ':'].success ? '最近检测通过' : '最近检测失败') : '连接未检测' }}</small></td>
           <td class="align-right"><div class="table-actions"><button v-if="canCheckConnection" class="link-button" :disabled="isPending(`check:${item.id}:`)" @click="emit('check-component', { id: item.id })">{{ isPending(`check:${item.id}:`) ? '测试中…' : '测试连接' }}</button><button class="link-button" @click="openDetail(item)">详情</button><button v-if="canManage" class="link-button" :disabled="isPending(`update:message-components:${item.id}`)" @click="openEdit(item)">修改</button><button v-if="canManage" class="link-button danger-text" :disabled="isPending(`remove:message-components:${item.id}`)" @click="openDelete(item)">删除</button></div></td>
         </tr>
-        <tr v-if="!components.length"><td colspan="6" class="empty-state">后端尚无消息组件，请先新建实例。</td></tr>
+        <tr v-if="!visibleComponents.length"><td colspan="6" class="empty-state"><template v-if="components.length">没有匹配的组件。<br><button class="link-button empty-state-action" @click="keyword = ''; status = 'ALL'">清除筛选</button></template><template v-else>还没有消息云组件。<br><button v-if="canManage" class="link-button empty-state-action" @click="openCreate">新建第一个组件</button></template></td></tr>
       </tbody></table></div>
+      <ListPagination v-model:page="page" v-model:page-size="pageSize" :total="filteredComponents.length" :total-pages="totalPages" />
     </section>
 
     <AppModal v-if="dialog === 'detail' && selectedItem" title="消息组件详情" wide @close="dialog = ''">
+      <div class="notice"><b>最近一次连接检测</b><p>{{ connectionChecks[selectedItem.id + ':']?.message || '尚未检测连接' }}</p><small>{{ connectionChecks[selectedItem.id + ':']?.checkedAt || '' }}</small></div>
       <div class="component-detail unified-detail">
         <DetailHeader eyebrow="RocketMQ 实例" :title="selectedItem.name" :code="selectedItem.id" description="受控管理连接参数、生产组和 Topic 路由。">
           <template #aside><StatusBadge :status="selectedItem.status"/></template>
@@ -217,11 +246,12 @@ function submit() {
     <AppModal v-if="canManage && dialog === 'delete' && selectedItem" title="删除 MQ 实例" @close="dialog = ''">
       <p>确定删除 MQ 实例 <b>{{ selectedItem.name }}</b> 吗？删除后无法在本系统中恢复。</p>
       <div v-if="referenceTemplates.length || referenceTasks.length" class="notice"><b>当前不能删除：</b><span v-if="referenceTemplates.length"> {{ referenceTemplates.length }} 个报文引用该实例</span><span v-if="referenceTemplates.length && referenceTasks.length">，</span><span v-if="referenceTasks.length"> {{ referenceTasks.length }} 个任务引用该实例</span>。请先调整相关配置。</div>
-      <div v-else class="notice">该实例没有被报文或任务引用，确认后将从 PostgreSQL 删除。</div>
+      <div v-else class="notice">该实例没有被报文或任务引用，确认后将删除该配置。</div>
       <template #footer><button class="button secondary" @click="dialog = ''">取消</button><button class="button danger" :disabled="referenceTemplates.length || referenceTasks.length || isPending(`remove:message-components:${selectedItem.id}`)" @click="confirmDelete">{{ isPending(`remove:message-components:${selectedItem.id}`) ? '正在删除…' : '确认删除' }}</button></template>
     </AppModal>
 
-    <AppModal v-if="canManage && dialog === 'edit'" :title="form.id ? '编辑 RocketMQ 组件' : '新建 RocketMQ 组件'" wide @close="dialog = ''">
+    <AppModal v-if="canManage && dialog === 'edit'" :title="form.id ? '编辑 RocketMQ 组件' : '新建 RocketMQ 组件'" wide @close="dialog = ''" :before-close="confirmFormClose">
+      <p v-if="formDirty" class="muted" role="status">有未保存修改</p>
       <section class="basic-panel">
         <div class="section-heading"><div><h3>基础配置与鉴权</h3><p>字段语义与 RocketMQ 官方配置一致；SecretKey 使用密码框输入且服务端不会回显。</p></div></div>
         <div class="form-grid three-column component-editor-base">
@@ -260,7 +290,7 @@ function submit() {
         </section>
       </div>
       <p v-if="formError" class="status-badge negative editor-error">{{ formError }}</p>
-      <template #footer><span class="save-hint">Group 和 Topic 的修改将在保存组件后生效</span><button class="button secondary" @click="dialog = ''">取消</button><button class="button primary" :disabled="form.id ? isPending(`update:message-components:${form.id}`) : isPending('create:message-components')" @click="submit">{{ (form.id ? isPending(`update:message-components:${form.id}`) : isPending('create:message-components')) ? '正在保存…' : '保存组件' }}</button></template>
+      <template #footer><span class="save-hint">Group 和 Topic 的修改将在保存组件后生效</span><button class="button secondary" @click="confirmFormClose() && (dialog = '')">取消</button><button class="button primary" :disabled="form.id ? isPending(`update:message-components:${form.id}`) : isPending('create:message-components')" @click="submit">{{ (form.id ? isPending(`update:message-components:${form.id}`) : isPending('create:message-components')) ? '正在保存…' : '保存组件' }}</button></template>
     </AppModal>
   </main>
 </template>

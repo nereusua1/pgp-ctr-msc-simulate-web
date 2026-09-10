@@ -5,6 +5,10 @@ import StatusBadge from '../components/StatusBadge.vue'
 import { formatDateTime } from '../date-time.mjs'
 
 const props = defineProps({
+  canManage: {type: Boolean, default: false},
+  templates: {type: Array, default: () => []},
+  components: {type: Array, default: () => []},
+  connectionChecks: {type: Object, default: () => ({})},
   tasks: { type: Array, default: () => [] },
   executions: { type: Array, default: () => [] },
   analytics: { type: Object, default: () => ({}) },
@@ -13,6 +17,16 @@ const props = defineProps({
 })
 const emit = defineEmits(['navigate', 'task-action', 'open-execution', 'refresh-overview', 'filter-logs'])
 const hoveredPoint = ref(null)
+const incompleteTasks = computed(() => props.tasks.filter(task => !props.templates.some(template => template.id === task.messageId)))
+const checkedComponents = computed(() => props.components.filter(item => props.connectionChecks[item.id + ':']))
+const failedConnections = computed(() => checkedComponents.value.filter(item => !props.connectionChecks[item.id + ':'].success))
+const attentionTasks = computed(() => props.tasks.flatMap(task => {
+  const template = props.templates.find(item => item.id === task.messageId)
+  const targets = template?.deliveryTargets || []
+  const reason = !template ? '关联模板不存在' : !targets.length ? '模板未配置投递目标'
+    : targets.some(target => !props.components.some(component => component.id === target.componentId && component.status !== 'DISABLED')) ? '投递目标不存在或已停用' : ''
+  return reason ? [{task, reason}] : []
+}))
 
 const rangeLabel = computed(() => props.analyticsRange === '7d' ? '最近 7 天' : '最近 24 小时')
 const enabledCount = computed(() => props.tasks.filter(item => item.status === 'ENABLED').length)
@@ -35,7 +49,7 @@ const health = computed(() => {
   if (!Number(props.analytics?.executions || 0)) return { tone: 'idle', label: '等待运行数据', description: `${rangeLabel.value}暂无执行批次，运行任务后将在这里展示链路健康情况。` }
   return hasFailure.value
     ? { tone: 'warning', label: '运行需关注', description: `${rangeLabel.value}发现 ${Number(props.analytics.failed).toLocaleString()} 条失败投递，建议优先处理最近异常。` }
-    : { tone: 'healthy', label: '系统运行正常', description: `${rangeLabel.value}没有发现失败投递，任务与消息链路状态稳定。` }
+    : { tone: 'healthy', label: '当前统计窗口无失败投递', description: `${rangeLabel.value}没有记录失败投递；消息云连接状态需单独检测。` }
 })
 const trend = computed(() => {
   const raw = Array.isArray(props.analytics?.trend) ? props.analytics.trend : []
@@ -166,8 +180,33 @@ const sparkPoints = points => {
       </div>
     </div>
 
+    <section v-if="!canManage" class="card">
+      <div class="card-heading"><div><h2>任务与历史补跑</h2><p>查看任务详情，选择计划触发时间执行整个任务。</p></div></div>
+      <div v-for="task in tasks" :key="task.id" class="task-health-row">
+        <button class="text-link" @click="emit('task-action', task)">{{ task.name }}</button>
+        <StatusBadge :status="task.status" />
+        <button class="button secondary small" @click="emit('task-action', task)">查看与历史补跑</button>
+      </div>
+      <p v-if="!tasks.length" class="empty-state">暂无可操作任务，请联系管理员。</p>
+      <button class="link-button" @click="emit('navigate', 'logs')">查看执行记录</button>
+    </section>
+    <section v-if="canManage" class="card attention-card">
+      <div class="card-heading"><div><h2>待处理事项</h2><p>先处理影响执行的配置问题；连接状态仅代表最近一次检测结果。</p></div></div>
+      <div class="attention-list">
+        <div v-for="item in attentionTasks" :key="item.task.id" class="attention-row"><div><b>{{ item.task.name }}</b><p>{{ item.reason }}，请修正后再执行。</p></div><button class="link-button" @click="emit('task-action', item.task)">查看任务 →</button></div>
+        <div v-for="item in failedConnections" :key="'connection-' + item.id" class="attention-row"><div><b>{{ item.name }}</b><p>最近连接检测失败，请检查连接配置后重新检测。</p></div><button class="link-button" @click="emit('navigate', 'message-components', {keyword: item.name})">检查组件 →</button></div>
+        <p v-if="!attentionTasks.length && !failedConnections.length" class="muted">当前已加载配置中未发现上述问题；未检测的连接不代表可用。</p>
+      </div>
+      <div class="runtime-metrics">
+        <div><b>消息云组件</b><p>{{ components.length }} 个 · {{ components.length - checkedComponents.length }} 个未检测 · {{ failedConnections.length }} 个最近检测失败</p><button class="link-button" @click="emit('navigate', 'message-components')">检查连接</button></div>
+        <div><b>报文模板</b><p>{{ templates.length }} 份配置</p><button class="link-button" @click="emit('navigate', 'messages')">维护模板</button></div>
+        <div><b>任务配置</b><p>{{ incompleteTasks.length }} 个任务未找到关联模板</p><button class="link-button" @click="emit('navigate', 'tasks')">检查任务</button></div>
+        <div><b>执行结果</b><p>按批次查看失败阶段和原因</p><button class="link-button" @click="emit('navigate', 'logs')">查看执行记录</button></div>
+      </div>
+    </section>
+    <template v-if="canManage">
     <section class="runtime-summary" :class="health.tone" aria-label="运行健康状态">
-      <div class="health-message"><span class="health-dot"></span><div><h2>{{ health.label }}</h2><p>{{ health.description }}</p></div><button class="text-link" @click="emit('navigate', 'logs')">查看执行日志 <AppIcon name="arrow" :size="14" /></button></div>
+      <div class="health-message"><span class="health-dot"></span><div><h2>{{ health.label }}</h2><p>{{ health.description }}</p></div><button class="text-link" @click="emit('navigate', 'logs')">查看执行记录 <AppIcon name="arrow" :size="14" /></button></div>
       <dl class="runtime-metrics">
         <div><dt>启用任务</dt><dd>{{ enabledCount }}</dd><small>共 {{ tasks.length }} 个任务</small><small class="metric-change">{{ metricChange('enabledTasks') }}</small></div>
         <div><dt>执行批次</dt><dd>{{ Number(analytics?.executions || 0).toLocaleString() }}</dd><small>{{ rangeLabel }}</small><small class="metric-change">{{ metricChange('executions') }}</small></div>
@@ -224,7 +263,7 @@ const sparkPoints = points => {
       <div class="first-run-copy">
         <span class="first-run-mark"><AppIcon name="bolt" :size="20" /></span>
         <div><h2>运行一次任务，开始观察执行链路</h2><p>当前有 {{ tasks.length }} 个任务，其中 {{ enabledCount }} 个已启用。首次执行后，这里会展示投递趋势、MQ 分布和异常定位信息。</p></div>
-        <div class="first-run-actions"><button class="button primary" @click="emit('navigate', 'tasks')">前往任务管理</button><button class="button secondary" @click="emit('navigate', 'logs')">查看执行日志</button></div>
+        <div class="first-run-actions"><button class="button primary" @click="emit('navigate', 'tasks')">前往任务管理</button><button class="button secondary" @click="emit('navigate', 'logs')">查看执行记录</button></div>
       </div>
       <ol class="execution-path" aria-label="首次执行步骤">
         <li class="ready"><i>1</i><span><b>检查任务配置</b><small>{{ tasks.length ? `已创建 ${tasks.length} 个任务` : '需要先创建任务' }}</small></span></li>
@@ -240,10 +279,12 @@ const sparkPoints = points => {
         <div v-for="task in overviewTasks" :key="task.id" class="task-health-row"><button class="task-link" @click="emit('task-action', task)">{{ task.name }}<small>{{ task.code || task.id }}</small></button><StatusBadge :status="task.status" /><span class="latest-run"><StatusBadge v-if="task.latest" :status="task.latest.status" /><small>{{ task.latest ? formatDateTime(task.latest.startedAt) : '暂无执行' }}</small></span><div class="sparkline"><svg v-if="task.points.length" viewBox="0 0 100 34" role="img" :aria-label="`${task.name}最近执行趋势`"><polyline :points="sparkPoints(task.points)" /><circle v-for="(point, index) in task.points" :key="point.executionId" :cx="5 + index * (90 / Math.max(1, task.points.length - 1))" :cy="point.status === 'SUCCESS' ? 9 : (point.status === 'PARTIAL_SUCCESS' ? 17 : 25)" r="3" :class="point.status.toLowerCase()"><title>{{ formatDateTime(point.startedAt) }} · {{ point.status }}</title></circle></svg><span v-else>暂无趋势</span></div><button class="link-button" @click="emit('task-action', task)">查看</button></div>
       </div><div v-else class="chart-empty">后端尚无任务数据。</div>
     </section>
+    </template>
   </main>
 </template>
 
 <style scoped>
+.attention-list { padding: 0 20px; }.attention-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 14px 0; border-bottom: 1px solid #f0f0f0; }.attention-row b { font-size: 15px; }.attention-row p { margin: 5px 0 0; color: #595959; font-size: 14px; }
 .overview-page { display: grid; gap: 16px; padding-bottom: 44px; }
 .overview-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 2px; padding-top: 2px; }
 .overview-controls { display: flex; align-items: center; gap: 10px; }

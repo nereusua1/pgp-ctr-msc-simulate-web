@@ -1,22 +1,30 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import ListFilters from '../components/ListFilters.vue'
+import ListPagination from '../components/ListPagination.vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import AppModal from '../components/AppModal.vue'
+import AppDetailPage from '../components/AppDetailPage.vue'
+import {setRoute} from '../page-route.mjs'
+import {useListState} from '../list-state.mjs'
+import {latestRequest} from '../interaction-policy.mjs'
 import AppIcon from '../components/AppIcon.vue'
 import SearchInput from '../components/SearchInput.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import DetailHeader from '../components/DetailHeader.vue'
 import DetailGrid from '../components/DetailGrid.vue'
 import DetailSection from '../components/DetailSection.vue'
+import TruncatedText from '../components/TruncatedText.vue'
 import * as api from '../api'
+import {copyMessageDraft, localDateTimeValue, preGenerateMessage} from '../message-pre-generation.mjs'
+import {normalizeTimeBinding, recommendedTimeStrategy, TIME_STRATEGIES, timeStrategiesForPath} from '../time-binding.mjs'
 
-const props = defineProps({ templates: Array, sources: Array, components: Array, tasks: Array, pendingActions: { type: Object, default: () => new Set() }, canManage: { type: Boolean, default: false } })
+const props = defineProps({ templates: Array, sources: Array, components: Array, tasks: Array, routeId: {type: String, default: ''}, pendingActions: { type: Object, default: () => new Set() }, canManage: { type: Boolean, default: false } })
 const emit = defineEmits(['update', 'create', 'remove', 'notify', 'check-component', 'editing-state'])
 const selectedId = ref(props.templates[0]?.id || '')
-const keyword = ref('')
-const page = ref(1)
-const pageSize = 10
+const {keyword, status: statusFilter, page, pageSize} = useListState('messages')
 const activeTab = ref('basic')
 const dialog = ref('')
+const editorPreview = ref(false)
 const activeTargetComponentId = ref('')
 const groupSuggestionsOpen = ref(false)
 const activeGroupSuggestionIndex = ref(-1)
@@ -25,6 +33,12 @@ const activeTopicSuggestionIndex = ref(-1)
 const createError = ref('')
 const form = reactive({})
 const createForm = reactive({ name: '', type: 'JSON', description: '' })
+const copyForm = reactive({ name: '', includeDeliveryTargets: false })
+const copyError = ref('')
+const preGenerateForm = reactive({ plannedTriggerTime: '' })
+const preGeneration = ref(null)
+const preGenerateCode = ref(null)
+const preGenerateError = ref('')
 const dataItemKeyword = ref('')
 const sourceKeyword = ref('')
 const elementKeyword = ref('')
@@ -35,12 +49,7 @@ const catalogLoading = reactive({ dataItems: false, sources: false, elements: fa
 const fileInspection = ref(null)
 const fileInspecting = ref(false)
 const savedFormSnapshot = ref('')
-const timeStrategies = [
-  ['TASK_TRIGGER_TIME', '计划触发时间'],
-  ['BUSINESS_BASE_TIME', '业务基准时间'],
-  ['DATA_INTERVAL_SEQUENCE', '按数据项间隔生成'],
-  ['PERIOD_END_TIME', '预报结束时间']
-]
+const timeStrategies = TIME_STRATEGIES
 const valueProviders = [
   ['MESSAGE_ID', '消息 ID'],
   ['PLANNED_TRIGGER_TIME', '计划触发时间'],
@@ -84,11 +93,11 @@ const deliveryTargetsOf = template => {
 const targetTopicsOf = template => [...new Set(deliveryTargetsOf(template).map(item => item.topic).filter(Boolean))]
 const filteredTemplates = computed(() => {
   const search = keyword.value.trim().toLowerCase()
-  return props.templates.filter(item => !search || [item.name, item.type, item.description, dataItemName(item), dataSourceName(item), ...targetTopicsOf(item)]
-    .some(value => String(value || '').toLowerCase().includes(search)))
+  return props.templates.filter(item => (statusFilter.value === 'ALL' || item.status === statusFilter.value) && (!search || [item.name, item.type, item.description, dataItemName(item), dataSourceName(item), ...targetTopicsOf(item)]
+    .some(value => String(value || '').toLowerCase().includes(search))))
 })
-const totalPages = computed(() => Math.max(1, Math.ceil(filteredTemplates.value.length / pageSize)))
-const visibleTemplates = computed(() => filteredTemplates.value.slice((page.value - 1) * pageSize, page.value * pageSize))
+const totalPages = computed(() => Math.max(1, Math.ceil(filteredTemplates.value.length / pageSize.value)))
+const visibleTemplates = computed(() => filteredTemplates.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
 const referenceTasks = computed(() => props.tasks.filter(item => item.messageId === selected.value?.id))
 const selectedTargetIds = computed(() => (form.deliveryTargets || []).map(item => item.componentId))
 const activeDeliveryTarget = computed(() => (form.deliveryTargets || []).find(item => item.componentId === activeTargetComponentId.value))
@@ -123,8 +132,11 @@ const detectedScalarFields = computed(() => {
 })
 const valueRuleBindings = computed(() => (form.bindings || []).filter(binding => binding.kind === 'VALUE_RULE'))
 const configuredTimeBindingCount = computed(() => detectedTimeFields.value.filter(field => timeBindingOf(field.path)).length)
+const allTimeFieldsSelected = computed(() => detectedTimeFields.value.length > 0
+  && detectedTimeFields.value.every(field => Boolean(timeBindingOf(field.path))))
+const someTimeFieldsSelected = computed(() => detectedTimeFields.value.some(field => Boolean(timeBindingOf(field.path))))
 const invalidTimeBindings = computed(() => (form.bindings || []).filter(binding => binding.kind === 'TIME_RULE'
-  && (!timeStrategies.some(item => item[0] === binding.strategy) || Object.prototype.hasOwnProperty.call(binding, 'offset'))))
+  && (!timeStrategiesForPath(binding.path).some(item => item[0] === binding.strategy) || Object.prototype.hasOwnProperty.call(binding, 'offset'))))
 const invalidValueBindings = computed(() => valueRuleBindings.value.filter(binding => !binding.path
   || !valueProviders.some(item => item[0] === binding.provider) || (binding.provider === 'CONSTANT' && binding.value === undefined)))
 const configurationTabs = computed(() => [
@@ -133,9 +145,38 @@ const configurationTabs = computed(() => [
   ['bindings', '变量绑定'], ['target', '默认投递目标']
 ])
 const currentFormSnapshot = () => JSON.stringify(normalizedForm(form.status))
-const isEditorDirty = computed(() => dialog.value === 'edit' && Boolean(savedFormSnapshot.value) && currentFormSnapshot() !== savedFormSnapshot.value)
+const isEditorDirty = computed(() => dialog.value === 'create'
+  ? Boolean(createForm.name || createForm.description || createForm.type !== 'JSON')
+  : dialog.value === 'edit' && Boolean(savedFormSnapshot.value) && currentFormSnapshot() !== savedFormSnapshot.value)
+const saveError = ref('')
+const reviewIssues = computed(() => {
+  const issues = []
+  if (!form.name?.trim()) issues.push({tab: 'basic', message: '填写报文名称'})
+  try { JSON.parse(form.content || '') } catch { issues.push({tab: 'content', message: '修正报文 JSON 格式'}) }
+  if (!hasCompleteDataBinding()) issues.push({tab: 'data', message: '完成数据源、数据项和要素关联'})
+  if (form.type === 'FILE' && !form.fileGeneration?.timeColumn) issues.push({tab: 'file', message: '配置文件时间字段'})
+  if (invalidTimeBindings.value.length || invalidValueBindings.value.length) issues.push({tab: 'bindings', message: '修正变量绑定路径或值来源'})
+  if (!hasCompleteTargets()) issues.push({tab: 'target', message: '为投递目标配置 Group 和 Topic'})
+  return issues
+})
+const tabIssueCount = tab => reviewIssues.value.filter(issue => issue.tab === tab).length
+const changedSections = computed(() => {
+  if (!selected.value || !isEditorDirty.value) return []
+  const groups = [
+    ['基本信息', ['name', 'type', 'description', 'encoding']], ['报文内容', ['content']],
+    ['数据关联', ['dataBinding']], ['文件模板', ['fileGeneration']], ['变量绑定', ['bindings']], ['投递目标', ['deliveryTargets']]
+  ]
+  return groups.filter(([, keys]) => keys.some(key => JSON.stringify(form[key]) !== JSON.stringify(selected.value[key]))).map(([label]) => label)
+})
+function locateIssue(issue) {
+  activeTab.value = issue.tab
+  requestAnimationFrame(() => {
+    const panel = document.getElementById('config-panel-' + issue.tab)
+    panel?.scrollIntoView({block: 'start'})
+    panel?.querySelector('input, textarea, select, button')?.focus()
+  })
+}
 
-watch(keyword, () => { page.value = 1 })
 watch(totalPages, value => { if (page.value > value) page.value = value })
 watch(sourceKeyword, () => scheduleCatalogSearch('sources'))
 watch(dataItemKeyword, () => scheduleCatalogSearch('dataItems'))
@@ -153,16 +194,21 @@ watch(() => form.type, type => {
   }
   if (type !== 'FILE' && activeTab.value === 'file') activeTab.value = 'basic'
 })
-watch([dialog, isEditorDirty], () => emit('editing-state', dialog.value === 'edit' && isEditorDirty.value), { immediate: true })
+watch([dialog, isEditorDirty], () => emit('editing-state', isEditorDirty.value), { immediate: true, flush: 'sync' })
 
 function warnBeforeUnload(event) {
   if (!isEditorDirty.value) return
   event.preventDefault()
   event.returnValue = ''
 }
-onMounted(() => window.addEventListener('beforeunload', warnBeforeUnload))
+function handleGlobalCreate(event) { if (event.detail?.page === 'messages') openCreate() }
+onMounted(() => {
+  window.addEventListener('beforeunload', warnBeforeUnload)
+  window.addEventListener('global-create', handleGlobalCreate)
+})
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', warnBeforeUnload)
+  window.removeEventListener('global-create', handleGlobalCreate)
   clearTimeout(dataItemTimer); clearTimeout(sourceTimer); clearTimeout(elementTimer)
 })
 
@@ -196,7 +242,54 @@ function openFor(item, target) {
   syncForm()
   if (target === 'edit') activeTab.value = 'basic'
   dialog.value = target
+  if (target === 'edit') setRoute('messages', item.id, true)
 }
+function openCopy(item) {
+  selectedId.value = item.id
+  Object.assign(copyForm, {name: `${item.name} - 副本`, includeDeliveryTargets: false})
+  copyError.value = ''
+  dialog.value = 'copy'
+}
+function submitCopy() {
+  const name = copyForm.name.trim()
+  if (!name) { copyError.value = '请输入新报文名称'; return }
+  if (props.templates.some(item => item.name.trim() === name)) { copyError.value = '该报文名称已存在，请修改后再复制'; return }
+  copyError.value = ''
+  emit('create', copyMessageDraft(selected.value, name, copyForm.includeDeliveryTargets), created => {
+    dialog.value = ''
+    selectedId.value = created.id
+    setRoute('messages', created.id, true)
+  }, error => { copyError.value = error || '复制失败，请重试' })
+}
+function openPreGenerate(item) {
+  selectedId.value = item.id
+  preGenerateForm.plannedTriggerTime = localDateTimeValue()
+  preGeneration.value = null
+  preGenerateError.value = ''
+  dialog.value = 'pre-generate'
+  runPreGeneration()
+}
+async function runPreGeneration() {
+  const previousScrollTop = preGenerateCode.value?.scrollTop || 0
+  preGenerateError.value = ''
+  try {
+    preGeneration.value = preGenerateMessage(selected.value, preGenerateForm.plannedTriggerTime)
+    await nextTick()
+    if (preGenerateCode.value) preGenerateCode.value.scrollTop = previousScrollTop
+  }
+  catch (error) { preGeneration.value = null; preGenerateError.value = error.message }
+}
+watch(() => props.routeId, id => {
+  if (id === 'new') { dialog.value = 'create'; return }
+  if (!id) { if (dialog.value === 'edit' || dialog.value === 'create') dialog.value = ''; return }
+  const item = props.templates.find(row => row.id === id)
+  if (item && (selectedId.value !== id || dialog.value !== 'edit')) openFor(item, 'edit')
+}, {immediate: true})
+watch(dialog, value => {
+  if (value === 'edit') setRoute('messages', selectedId.value, true)
+  else if (value === 'create') setRoute('messages', 'new')
+  else if (value === '') setRoute('messages')
+})
 function normalizedForm(status = form.status) {
   const deliveryTargets = [...new Map((form.deliveryTargets || []).filter(item => item.componentId).map(item => [item.componentId, {
     componentId: item.componentId,
@@ -212,6 +305,9 @@ function normalizedForm(status = form.status) {
   return { ...form, status, deliveryTargets, componentIds, componentId: componentIds[0] || '', producerGroup: firstTarget.producerGroup || '', topic: firstTarget.topic || '', dataBinding, fileGeneration, bindings: (form.bindings || []).map(normalizeTimeBinding) }
 }
 function save() {
+  saveError.value = ''
+  if ((selected.value?.status === 'PUBLISHED' || referenceTasks.value.length) &&
+      !window.confirm(`本次保存会创建待发布版本，关联 ${referenceTasks.value.length} 个任务将继续使用当前发布版本，其中 ${referenceTasks.value.filter(item => item.status === 'ENABLED').length} 个已启用自动调度。确认保存草稿？`)) return
   // “保存草稿”是明确的状态迁移动作：已发布报文发生配置变更后必须重新发布，
   // 避免页面展示的发布态与实际待审核配置不一致。
   const payload = normalizedForm('DRAFT')
@@ -219,7 +315,7 @@ function save() {
     if (result?.success) {
       form.status = payload.status
       savedFormSnapshot.value = currentFormSnapshot()
-    }
+    } else saveError.value = result?.error || '保存失败，输入已保留，请重试'
   })
 }
 function saveCurrentTab() {
@@ -240,6 +336,9 @@ function saveCurrentTab() {
   save()
 }
 function publish() {
+  saveError.value = ''
+  if (reviewIssues.value.length) { locateIssue(reviewIssues.value[0]); saveError.value = '请先完成下方待完善项，再发布'; return }
+  if (!window.confirm(`将发布当前整份配置并替换任务后续执行使用的版本，关联 ${referenceTasks.value.length} 个任务。请确认配置和投递目标。继续发布？`)) return
   if (invalidTimeBindings.value.length || invalidValueBindings.value.length) { emit('notify', '请先修正变量绑定配置', 'error'); activeTab.value = 'bindings'; return }
   if (!hasCompleteDataBinding()) { emit('notify', '请先完成数据源、数据项和要素项关联', 'error'); activeTab.value = 'data'; return }
   if (form.type === 'FILE' && !form.fileGeneration?.timeColumn) {
@@ -248,10 +347,10 @@ function publish() {
   if (!hasCompleteTargets()) { emit('notify', '请先完成每个 MQ 实例的 Group 和 Topic 配置', 'error'); activeTab.value = 'target'; return }
   const payload = normalizedForm('PUBLISHED')
   emit('update', payload, result => {
-    if (!result?.success) return
+    if (!result?.success) { saveError.value = result?.error || '发布失败，输入已保留'; return }
     form.status = payload.status
     savedFormSnapshot.value = currentFormSnapshot()
-    dialog.value = ''
+    // 发布成功仍停留当前章节，便于继续核对配置。
   })
 }
 function confirmEditorClose() {
@@ -259,7 +358,6 @@ function confirmEditorClose() {
 }
 function selectConfigurationTab(tab) {
   if (tab === activeTab.value) return
-  if (isEditorDirty.value) emit('notify', '已保留当前修改；保存草稿前请勿关闭或离开报文配置。', 'warning')
   activeTab.value = tab
 }
 function handleConfigurationTabKey(event, tab) {
@@ -392,23 +490,27 @@ function scheduleCatalogSearch(level) {
   if (level === 'sources') sourceTimer = timer
   if (level === 'elements') elementTimer = timer
 }
+const catalogRequests = {dataItems: latestRequest(), sources: latestRequest(), elements: latestRequest()}
 async function loadDataItemOptions() {
+  const isLatest = catalogRequests.dataItems()
   catalogLoading.dataItems = true
-  try { dataItemOptions.value = await api.searchDataItemOptions(form.dataBinding.sourceCode, dataItemKeyword.value, 20) }
-  catch (error) { emit('notify', error.message, 'error') }
-  finally { catalogLoading.dataItems = false }
+  try { const rows = await api.searchDataItemOptions(form.dataBinding.sourceCode, dataItemKeyword.value, 20); if (isLatest()) dataItemOptions.value = rows }
+  catch (error) { if (isLatest()) emit('notify', error.message, 'error') }
+  finally { if (isLatest()) catalogLoading.dataItems = false }
 }
 async function loadSourceOptions() {
+  const isLatest = catalogRequests.sources()
   catalogLoading.sources = true
-  try { sourceOptions.value = await api.searchDataSourceOptions(sourceKeyword.value, 20) }
-  catch (error) { emit('notify', error.message, 'error') }
-  finally { catalogLoading.sources = false }
+  try { const rows = await api.searchDataSourceOptions(sourceKeyword.value, 20); if (isLatest()) sourceOptions.value = rows }
+  catch (error) { if (isLatest()) emit('notify', error.message, 'error') }
+  finally { if (isLatest()) catalogLoading.sources = false }
 }
 async function loadElementOptions() {
+  const isLatest = catalogRequests.elements()
   catalogLoading.elements = true
-  try { elementOptions.value = await api.searchElementOptions(form.dataBinding.dataItemCode, form.dataBinding.sourceCode, elementKeyword.value, 50) }
-  catch (error) { emit('notify', error.message, 'error') }
-  finally { catalogLoading.elements = false }
+  try { const rows = await api.searchElementOptions(form.dataBinding.dataItemCode, form.dataBinding.sourceCode, elementKeyword.value, 50); if (isLatest()) elementOptions.value = rows }
+  catch (error) { if (isLatest()) emit('notify', error.message, 'error') }
+  finally { if (isLatest()) catalogLoading.elements = false }
 }
 function confirmCascadeReset(message) {
   return !form.dataBinding?.dataItemCode && !form.dataBinding?.elements?.length || window.confirm(message)
@@ -489,34 +591,13 @@ function collectScalarFields(value, path, fields) {
 function timeBindingOf(path) {
   return (form.bindings || []).find(binding => binding.path === path && (binding.kind === 'TIME_RULE' || binding.kind === 'TIME_OFFSET'))
 }
-function recommendedTimeStrategy(path) {
-  const normalized = String(path || '').toLowerCase()
-  if (normalized.endsWith('endtime')) return 'PERIOD_END_TIME'
-  if (normalized.endsWith('starttime')) return 'BUSINESS_BASE_TIME'
-  if (normalized.endsWith('datatime') || normalized.endsWith('forecasttime') || normalized.endsWith('forecast_time')) return 'DATA_INTERVAL_SEQUENCE'
-  return 'TASK_TRIGGER_TIME'
-}
-function normalizeTimeBinding(binding) {
-  if (!binding || (binding.kind !== 'TIME_RULE' && binding.kind !== 'TIME_OFFSET')) return { ...binding }
-  const normalized = {
-    ...binding,
-    kind: 'TIME_RULE',
-    strategy: binding.strategy || recommendedTimeStrategy(binding.path),
-    format: binding.format || 'yyyy-MM-dd HH:mm:ss'
-  }
-  if (normalized.strategy === 'TASK_TRIGGER_TIME' && String(normalized.path || '').toLowerCase().endsWith('starttime')) {
-    normalized.strategy = 'BUSINESS_BASE_TIME'
-  }
-  delete normalized.offset
-  return normalized
-}
 function timeStrategyLabel(binding) {
   const strategy = normalizeTimeBinding(binding).strategy
   return timeStrategies.find(item => item[0] === strategy)?.[1] || '未配置'
 }
 function timeStrategyLabelForField(field) {
-  const strategy = timeBindingOf(field.path)?.strategy || recommendedTimeStrategy(field.path)
-  return timeStrategies.find(item => item[0] === strategy)?.[1] || '未配置'
+  const binding = timeBindingOf(field.path)
+  return binding ? timeStrategyLabel(binding) : '不替换'
 }
 function toggleTimeBinding(field) {
   const list = [...(form.bindings || [])]
@@ -538,6 +619,15 @@ function bindAllTimeFields() {
     if (!existing.some(binding => binding.path === field.path && (binding.kind === 'TIME_RULE' || binding.kind === 'TIME_OFFSET'))) existing.push({ id: `time-rule-${Date.now()}-${existing.length}`, kind: 'TIME_RULE', path: field.path, strategy: recommendedTimeStrategy(field.path), format: field.format })
   })
   form.bindings = existing.map(normalizeTimeBinding)
+}
+function toggleAllTimeBindings() {
+  if (!allTimeFieldsSelected.value) {
+    bindAllTimeFields()
+    return
+  }
+  const detectedPaths = new Set(detectedTimeFields.value.map(field => field.path))
+  form.bindings = (form.bindings || []).filter(binding => !detectedPaths.has(binding.path)
+    || (binding.kind !== 'TIME_RULE' && binding.kind !== 'TIME_OFFSET'))
 }
 function addValueBinding() {
   if (!valueBindingDraft.path) { emit('notify', '请先选择要绑定的报文字段', 'error'); return }
@@ -587,17 +677,16 @@ function submitCreate() {
   if (!createForm.name.trim()) { createError.value = '请输入报文名称'; return }
   createError.value = ''
   const fileReference = createForm.type === 'FILE'
-  const component = props.components[0]
   const item = {
     ...createForm, name: createForm.name.trim(), description: createForm.description.trim(), status: 'DRAFT', encoding: 'UTF-8', sourceId: '',
     dataBinding: { dataItemCode: '', dataItemName: '', sourceCode: '', sourceName: '', elements: [] },
-    deliveryTargets: component?.id ? [{ componentId: component.id, producerGroup: producerGroupsOf(component)[0] || '', topic: topicsOf(component)[0] || '' }] : [],
-    componentIds: component?.id ? [component.id] : [], componentId: component?.id || '', producerGroup: producerGroupsOf(component)[0] || '', topic: topicsOf(component)[0] || '',
+    deliveryTargets: [],
+    componentIds: [], componentId: '', producerGroup: '', topic: '',
     content: fileReference ? '{\n  "metadata": {\n    "messageId": "示例消息标识"\n  },\n  "records": [{\n    "effectTimePeriod": {\n      "startTime": "2025/06/10 00:00:00",\n      "endTime": "2025/06/13 00:00:00"\n    },\n    "fileName": "SOURCE.csv",\n    "filePath": "http://localhost:8088/files/SOURCE.csv",\n    "fileType": "csv",\n    "planFileSize": "0"\n  }]\n}' : '{\n  "metadata": {\n    "messageId": "示例消息标识"\n  },\n  "records": []\n}',
     fileGeneration: fileReference ? { sourceFileName: '', sourceFilePath: '', timeColumn: '预报时间', sourceTimeFormat: 'yyyy-MM-dd_HH:mm:ss', delimiter: ',' } : undefined,
     bindings: [{ id: `value-rule-${Date.now()}-0`, kind: 'VALUE_RULE', path: '$.metadata.messageId', provider: 'MESSAGE_ID', targetType: 'string' }]
   }
-  emit('create', item, created => { selectedId.value = created.id; syncForm(); activeTab.value = 'data'; dialog.value = 'edit' })
+  emit('create', item, created => { selectedId.value = created.id; syncForm(); activeTab.value = 'data'; dialog.value = 'edit' }, error => { createError.value = error || '保存失败，请重试' })
 }
 function confirmDelete() {
   if (!selected.value || referenceTasks.value.length) return
@@ -607,24 +696,25 @@ function confirmDelete() {
 
 <template>
   <main class="page message-page">
-    <div class="page-heading"><div><h1>报文管理</h1><p>每行展示一份报文，点击名称查看完整配置。</p></div><button v-if="canManage" class="button primary" @click="openCreate"><AppIcon name="plus" :size="16" />新建报文</button></div>
-    <section class="card message-list-card">
-      <div class="list-toolbar">
-        <div><h2>报文列表</h2><p>维护报文内容、变量绑定及关联 Topic。</p></div>
-        <div class="filters"><label><span>搜索报文</span><SearchInput v-model="keyword" aria-label="搜索报文" placeholder="名称、数据源名称或 Topic" /></label></div>
-      </div>
-      <div class="table-scroll"><table class="data-table management-table message-table"><thead><tr><th>报文名称</th><th>数据源名称</th><th>关联数据项</th><th>关联 Topic</th><th>状态</th><th class="align-right">操作</th></tr></thead><tbody>
+    <div v-show="!routeId" class="page-heading"><div><h1>报文模板</h1><p>每行展示一份报文，点击名称查看完整配置。</p></div><button v-if="canManage" class="button primary" @click="openCreate"><AppIcon name="plus" :size="16" />新建报文</button></div>
+    <section v-show="!routeId" class="card message-list-card">
+      <ListFilters>
+        <label><span>搜索报文</span><SearchInput v-model="keyword" aria-label="搜索报文" placeholder="名称、数据源名称或 Topic" /></label>
+        <label>状态<select v-model="statusFilter"><option value="ALL">全部</option><option value="DRAFT">草稿</option><option value="PUBLISHED">已发布</option></select></label>
+        <button v-if="keyword || statusFilter !== 'ALL'" class="link-button" @click="keyword = ''; statusFilter = 'ALL'">清除筛选</button>
+      </ListFilters>
+      <div class="table-scroll"><table class="data-table management-table message-table"><thead><tr><th>报文名称</th><th class="responsive-low">数据源名称</th><th class="responsive-low">关联数据项</th><th>关联 Topic</th><th>状态</th><th class="operation-cell">操作</th></tr></thead><tbody>
         <tr v-for="item in visibleTemplates" :key="item.id">
           <td><button class="management-primary message-name" @click="openFor(item, 'detail')">{{ item.name }}</button><small>{{ item.description || '暂无业务描述' }}</small></td>
-          <td class="management-body" :title="dataSourceName(item)">{{ dataSourceName(item) }}</td>
-          <td class="management-body" :title="dataItemName(item)">{{ dataItemName(item) }}</td>
-          <td class="management-body target-cell" :title="targetTopicsOf(item).join('、') || '未关联'">{{ targetTopicsOf(item).join('、') || '未关联' }}</td>
-          <td><StatusBadge :status="item.status" /></td>
-          <td class="align-right"><div class="row-actions"><button class="link-button" @click="openFor(item, 'detail')">查看</button><button v-if="canManage" class="link-button" @click="openFor(item, 'edit')">配置</button><button class="link-button" @click="openFor(item, 'preview')">预览</button><button v-if="canManage" class="link-button danger-text" @click="openFor(item, 'delete')">删除</button></div></td>
+          <td class="management-body responsive-low"><TruncatedText :text="dataSourceName(item)" /></td>
+          <td class="management-body responsive-low"><TruncatedText :text="dataItemName(item)" /></td>
+          <td class="management-body target-cell"><TruncatedText :text="targetTopicsOf(item).join('、') || '未关联'" code copyable /></td>
+          <td class="status-cell"><StatusBadge :status="item.status" /></td>
+          <td class="operation-cell"><div class="row-actions"><button class="link-button" @click="openFor(item, 'detail')">查看</button><button v-if="canManage" class="link-button" @click="openFor(item, 'edit')">配置</button><button class="link-button" @click="openPreGenerate(item)">预生成</button><button v-if="canManage" class="link-button" @click="openCopy(item)">复制</button><button v-if="canManage" class="link-button danger-text" @click="openFor(item, 'delete')">删除</button></div></td>
         </tr>
-        <tr v-if="!visibleTemplates.length"><td colspan="6" class="empty-state">没有匹配的报文。</td></tr>
+        <tr v-if="!visibleTemplates.length"><td colspan="6" class="empty-state"><template v-if="templates.length">没有匹配的报文。<br><button class="link-button empty-state-action" @click="keyword = ''; statusFilter = 'ALL'">清除筛选</button></template><template v-else>还没有报文模板。<br><button v-if="canManage" class="link-button empty-state-action" @click="openCreate">新建第一份报文</button></template></td></tr>
       </tbody></table></div>
-      <div class="pagination"><span>共 {{ filteredTemplates.length }} 份报文，第 {{ page }} / {{ totalPages }} 页</span><div><button class="button secondary small" :disabled="page <= 1" @click="page--">上一页</button><button class="button secondary small" :disabled="page >= totalPages" @click="page++">下一页</button></div></div>
+      <ListPagination v-model:page="page" v-model:page-size="pageSize" :total="filteredTemplates.length" :total-pages="totalPages" />
     </section>
 
     <AppModal v-if="dialog === 'detail' && selected" title="报文详情" wide @close="dialog = ''">
@@ -655,28 +745,30 @@ function confirmDelete() {
         <DetailSection title="默认投递目标" description="一次任务执行会分别向以下目标投递" :count="deliveryTargetsOf(selected).length">
           <div v-if="deliveryTargetsOf(selected).length" class="table-scroll"><table class="data-table"><thead><tr><th>MQ 实例</th><th>Producer Group</th><th>Topic</th></tr></thead><tbody><tr v-for="target in deliveryTargetsOf(selected)" :key="target.componentId"><td><b>{{ componentOf(target.componentId)?.name || target.componentId }}</b></td><td>{{ target.producerGroup || '未配置' }}</td><td>{{ target.topic || '未配置' }}</td></tr></tbody></table></div><div v-else class="inline-empty">尚未配置投递目标</div>
         </DetailSection>
-        <DetailSection title="报文原文" description="数据库中保存的模板内容，真实执行结果请前往执行日志查看" collapsible>
+        <DetailSection title="模板原文" description="数据库中保存的模板内容；实际投递报文请前往执行记录查看" collapsible>
           <pre class="code-block">{{ selected.content || '未配置报文内容' }}</pre>
         </DetailSection>
       </div>
-      <template #footer><button class="button secondary" @click="dialog = 'preview'; syncForm()">查看模板预览</button><button class="button secondary" @click="dialog = ''">关闭</button><button v-if="canManage" class="button primary" @click="dialog = 'edit'; activeTab = 'basic'; syncForm()">配置报文</button></template>
+      <template #footer><button class="button secondary" @click="openPreGenerate(selected)">预生成报文</button><button class="button secondary" @click="dialog = ''">关闭</button><button v-if="canManage" class="button primary" @click="dialog = 'edit'; activeTab = 'basic'; syncForm()">配置报文</button></template>
     </AppModal>
 
-    <AppModal v-if="canManage && dialog === 'edit' && selected" :title="`配置报文 · ${selected.name}`" wide :before-close="confirmEditorClose" @close="dialog = ''">
+    <AppDetailPage v-if="canManage && dialog === 'edit' && selected" :title="`配置报文 · ${selected.name}`" :before-close="confirmEditorClose" @close="dialog = ''">
+      <section class="editor-status-strip"><div><StatusBadge :status="form.status || 'DRAFT'"/><span v-if="isEditorDirty" class="unsaved-indicator" role="status">未保存</span><span>关联 {{ referenceTasks.length }} 个任务 · {{ referenceTasks.filter(item => item.status === 'ENABLED').length }} 个已启用</span></div><button v-if="reviewIssues.length" class="issue-summary" @click="locateIssue(reviewIssues[0])">待完善 {{ reviewIssues.length }} 项 →</button><span v-else class="ready-summary">配置检查通过</span></section>
+      <p v-if="saveError" class="notice pre-generate-error" role="alert">{{ saveError }}</p>
       <template #header-actions><button v-if="selected.status !== 'PUBLISHED'" class="button primary" :disabled="isPending(`update:messages:${selected.id}`)" @click="publish">{{ isPending(`update:messages:${selected.id}`) ? '正在发布…' : '发布报文' }}</button></template>
       <div class="message-context"><div><b>{{ selected.name }}</b><small>{{ selected.type }} · {{ selected.description }}</small></div></div>
-      <div v-if="selected.status === 'PUBLISHED'" class="published-edit-notice"><b>当前报文已发布</b><span>修改后点击“保存草稿”将自动转为草稿，完成检查后可在顶部重新发布。</span></div>
-      <div class="config-step-navigation"><span class="config-step-label">配置步骤</span><span v-if="isEditorDirty" class="unsaved-indicator" role="status">未保存</span></div>
-      <nav class="tabs" role="tablist" aria-label="报文配置步骤"><button v-for="tab in configurationTabs" :key="tab[0]" type="button" role="tab" :data-config-tab="tab[0]" :aria-controls="`config-panel-${tab[0]}`" :aria-selected="activeTab === tab[0]" :tabindex="activeTab === tab[0] ? 0 : -1" :class="{ active: activeTab === tab[0] }" @click="selectConfigurationTab(tab[0])" @keydown="handleConfigurationTabKey($event, tab[0])">{{ tab[1] }}</button></nav>
+      <div v-if="selected.status === 'PUBLISHED' && isEditorDirty" class="published-edit-notice"><b>正在修改已发布报文</b><span>保存后将转为草稿，关联任务可能受到影响。</span></div>
+      <div class="config-step-navigation"><span class="config-step-label">配置步骤</span></div>
+      <nav class="tabs" role="tablist" aria-label="报文配置步骤"><button v-for="tab in configurationTabs" :key="tab[0]" type="button" role="tab" :data-config-tab="tab[0]" :aria-controls="`config-panel-${tab[0]}`" :aria-selected="activeTab === tab[0]" :tabindex="activeTab === tab[0] ? 0 : -1" :class="{ active: activeTab === tab[0] }" @click="selectConfigurationTab(tab[0])" @keydown="handleConfigurationTabKey($event, tab[0])">{{ tab[1] }}<small v-if="tabIssueCount(tab[0])" class="tab-issue-count">{{ tabIssueCount(tab[0]) }}</small></button></nav>
       <section v-if="activeTab === 'basic'" id="config-panel-basic" class="config-panel" role="tabpanel"><div class="card-heading"><div><h2>基本信息</h2><p>每份报文配置固定生成一条 MQ 消息。</p></div></div><div class="form-grid"><label>报文名称<input v-model="form.name"></label><label>报文类型<select v-model="form.type"><option>JSON</option><option>FILE</option></select></label><label>业务描述<input v-model="form.description"></label><label>默认编码<select v-model="form.encoding"><option>UTF-8</option><option>GBK</option></select></label></div></section>
-      <section v-else-if="activeTab === 'content'" id="config-panel-content" class="config-panel" role="tabpanel"><div class="card-heading"><div><h2>报文内容</h2><p>使用 JSON 结构与变量占位符定义最终报文。</p></div><button class="button secondary" @click="formatContent">格式化 / 校验</button></div><textarea v-model="form.content" class="code-editor" spellcheck="false"></textarea><div class="button-row"><button class="button secondary" @click="dialog = 'preview'">生成样例</button></div></section>
+      <section v-else-if="activeTab === 'content'" id="config-panel-content" class="config-panel" role="tabpanel"><div class="card-heading"><div><h2>报文内容</h2><p>使用 JSON 结构与变量占位符定义最终报文。</p></div><button class="button secondary" @click="formatContent">格式化 / 校验</button></div><textarea v-model="form.content" class="code-editor" spellcheck="false"></textarea><div class="button-row"><button class="button secondary" @click="editorPreview = true">查看原文</button></div></section>
       <section v-else-if="activeTab === 'data'" id="config-panel-data" class="config-panel" role="tabpanel"><div class="card-heading"><div><h2>数据关联</h2><p>依次选择数据源、该数据源提供的数据项，以及参与报文生成的要素项。</p></div></div><div class="data-linkage-grid">
         <section class="linkage-step"><h3><span>1</span>选择数据源</h3><p>按来源编码或中文名称远程搜索，最多返回 20 条。</p><label class="catalog-search">搜索数据源<input v-model="sourceKeyword" placeholder="输入来源编码或中文名称"></label><div class="catalog-options"><button v-for="item in sourceOptions" :key="item.code" type="button" :class="{ selected: form.dataBinding?.sourceCode === item.code }" @click="chooseDataSource(item)"><code>{{ item.code }}</code><b>{{ item.name || '未配置中文名称' }}</b><small>{{ item.dataItemCount }} 个数据项</small></button><div v-if="catalogLoading.sources" class="catalog-empty">正在搜索…</div><div v-else-if="!sourceOptions.length" class="catalog-empty">没有匹配的数据源</div></div></section>
         <section class="linkage-step" :class="{ disabled: !form.dataBinding?.sourceCode }"><h3><span>2</span>选择数据项</h3><p>只显示所选数据源实际提供的数据项。</p><label class="catalog-search">筛选数据项<input v-model="dataItemKeyword" :disabled="!form.dataBinding?.sourceCode" placeholder="数据项编码或中文名称"></label><div class="catalog-options"><button v-for="item in dataItemOptions" :key="item.code" type="button" :class="{ selected: form.dataBinding?.dataItemCode === item.code }" @click="chooseDataItem(item)"><code>{{ item.code }}</code><b>{{ item.name || '未配置中文名称' }}</b><small>{{ item.elementCount }} 个要素</small></button><div v-if="catalogLoading.dataItems" class="catalog-empty">正在加载…</div><div v-else-if="form.dataBinding?.sourceCode && !dataItemOptions.length" class="catalog-empty">没有匹配的数据项</div></div></section>
         <section class="linkage-step element-step" :class="{ disabled: !form.dataBinding?.sourceCode }"><h3><span>3</span>选择要素项</h3><p>支持搜索、多选及全选当前结果。</p><label class="catalog-search">搜索要素项<input v-model="elementKeyword" :disabled="!form.dataBinding?.sourceCode" placeholder="要素编码或中文名称"></label><button class="select-all" type="button" :disabled="!elementOptions.length" @click="toggleAllElements">全选/取消当前结果 · 已选 {{ form.dataBinding?.elements?.length || 0 }} 项</button><div class="element-options"><label v-for="item in elementOptions" :key="item.id" :class="{ selected: isElementSelected(item) }"><input type="checkbox" :checked="isElementSelected(item)" @change="toggleElement(item)"><span><b>{{ item.code }} · {{ item.name || '未配置中文名称' }}</b><small>{{ item.unit || '无单位' }} · {{ item.dataFormat || '未配置格式' }}</small></span></label><div v-if="catalogLoading.elements" class="catalog-empty">正在加载…</div><div v-else-if="form.dataBinding?.sourceCode && !elementOptions.length" class="catalog-empty">没有匹配的要素项</div></div></section>
       </div><div class="binding-summary"><div><b>{{ form.dataBinding?.sourceCode || '未选择数据源' }} / {{ form.dataBinding?.dataItemCode || '未选择数据项' }}</b><small>{{ form.dataBinding?.sourceName || '—' }} · {{ form.dataBinding?.dataItemName || '—' }}</small><div class="selected-element-chips"><span v-for="element in form.dataBinding?.elements" :key="element.id">{{ element.code }} {{ element.name }}</span></div></div><strong>已选 {{ form.dataBinding?.elements?.length || 0 }} 个要素</strong></div></section>
       <section v-else-if="activeTab === 'file'" id="config-panel-file" class="config-panel file-template-panel" role="tabpanel">
-        <div class="card-heading"><div><h2>文件模板</h2><p>源文件由管理人员预先放入 Nginx；执行时按数据项时间间隔生成新文件，不覆盖源文件。</p></div><button class="button secondary" :disabled="fileInspecting" @click="inspectSourceFile">{{ fileInspecting ? '正在扫描…' : '扫描日期字段' }}</button></div>
+        <div class="card-heading"><div><h2>文件模板</h2><p>源文件由管理人员预先上传到文件服务；执行时按数据项时间间隔生成新文件，不覆盖源文件。</p></div><button class="button secondary" :disabled="fileInspecting" @click="inspectSourceFile">{{ fileInspecting ? '正在扫描…' : '扫描日期字段' }}</button></div>
         <div class="file-generation-flow"><span>读取人工源文件</span><b>→</b><span>按计划触发时间改写</span><b>→</b><span>发布带 SIM 标识的新文件</span><b>→</b><span>回填外层报文</span></div>
         <div class="form-grid">
           <label>原始文件地址（可选）<input v-model.trim="form.fileGeneration.sourceFilePath" placeholder="留空时读取外层报文中的 filePath"><small>完整 URL 必须属于 Nginx 受控根地址，也可填写共享目录相对路径。</small></label>
@@ -686,13 +778,13 @@ function confirmDelete() {
           <label>字段分隔符<select v-model="form.fileGeneration.delimiter"><option value=",">逗号（CSV）</option><option value="TAB">制表符（TXT）</option><option value="|">竖线（TXT）</option><option value=";">分号</option></select><small>文件扩展名不决定解析方式，CSV/TXT 均按此配置读取。</small></label>
         </div>
         <div v-if="fileInspection" class="file-inspection-result"><div><span>已扫描</span><b>{{ fileInspection.scannedRows }} 行样本</b></div><button v-for="column in fileInspection.timeColumns" :key="column.columnName" type="button" :class="{ selected: form.fileGeneration.timeColumn === column.columnName }" @click="form.fileGeneration.timeColumn = column.columnName; form.fileGeneration.sourceTimeFormat = column.format"><span>{{ column.columnName }}</span><b>{{ column.sample }}</b><small>{{ column.format }}</small></button><p v-if="!fileInspection.timeColumns?.length">未发现支持的日期字段。</p></div>
-        <div class="notice"><b>时间规则：</b>文件第一个时间槽使用后端对齐后的业务基准时间，后续时间槽按所选数据项和数据源在 msc_sys.element_item_cfg 中配置的 period_interval 递增。源文件不存在时记录后端告警日志并终止本次发送。</div>
+        <div class="notice"><b>时间规则：</b>文件第一个时间槽使用后端对齐后的业务基准时间，后续时间槽按所选数据项和数据源配置的时间间隔 递增。源文件不存在时记录后端告警日志并终止本次发送。</div>
       </section>
       <section v-else-if="activeTab === 'bindings'" id="config-panel-bindings" class="config-panel time-binding-panel" role="tabpanel">
         <div class="card-heading"><div><h2>时间规则</h2><p>系统自动识别日期字段；任务提供计划触发时间，后端再依据数据项配置计算业务基准时间。</p></div><button class="button secondary" :disabled="!detectedTimeFields.length" @click="bindAllTimeFields">应用推荐规则</button></div>
         <div class="time-binding-guide"><div><span>调度输入</span><b>计划触发时间</b></div><div><span>业务起点</span><b>实况准点 / 预报起报点</b></div><div><span>数据间隔</span><b>读取 period_interval</b></div><div><span>结束时间</span><b>读取 period</b></div><strong>已配置 {{ configuredTimeBindingCount }} / {{ detectedTimeFields.length }}</strong></div>
         <div v-if="!detectedTimeFields.length" class="notice">未识别到 yyyy-MM-dd HH:mm:ss 或 yyyy/MM/dd HH:mm:ss 日期字段，请先检查报文内容。</div>
-        <div v-else class="table-scroll"><table class="data-table time-binding-table"><thead><tr><th class="binding-check">替换</th><th>字段</th><th>报文路径</th><th>当前示例值</th><th>生成规则</th></tr></thead><tbody><tr v-for="field in detectedTimeFields" :key="field.path" :class="{ active: timeBindingOf(field.path) }"><td><input type="checkbox" :checked="Boolean(timeBindingOf(field.path))" :aria-label="`绑定 ${field.field}`" @change="toggleTimeBinding(field)"></td><td><b>{{ field.field }}</b><small>{{ field.format }}</small></td><td><code>{{ field.path }}</code></td><td>{{ field.sample }}</td><td><div class="time-strategy-control" :class="{ disabled: !timeBindingOf(field.path) }"><b>{{ timeStrategyLabelForField(field) }}</b><select class="time-strategy-select" :disabled="!timeBindingOf(field.path)" :value="timeBindingOf(field.path)?.strategy || recommendedTimeStrategy(field.path)" :aria-label="`${field.field} 生成规则`" @change="updateTimeStrategy(field, $event.target.value)"><option v-for="strategy in timeStrategies" :key="strategy[0]" :value="strategy[0]">{{ strategy[1] }}</option></select></div></td></tr></tbody></table></div>
+        <div v-else class="table-scroll"><table class="data-table time-binding-table"><thead><tr><th class="binding-check"><label class="binding-select-all"><input type="checkbox" :checked="allTimeFieldsSelected" :indeterminate="someTimeFieldsSelected && !allTimeFieldsSelected" aria-label="全选时间字段替换" @change="toggleAllTimeBindings"><span>替换</span></label></th><th>字段</th><th>报文路径</th><th>当前示例值</th><th>生成规则</th></tr></thead><tbody><tr v-for="field in detectedTimeFields" :key="field.path" :class="{ active: timeBindingOf(field.path) }"><td><input type="checkbox" :checked="Boolean(timeBindingOf(field.path))" :aria-label="`绑定 ${field.field}`" @change="toggleTimeBinding(field)"></td><td><b>{{ field.field }}</b><small>{{ field.format }}</small></td><td><code>{{ field.path }}</code></td><td>{{ field.sample }}</td><td><div class="time-strategy-control" :class="{ disabled: !timeBindingOf(field.path) }"><b>{{ timeStrategyLabelForField(field) }}</b><select class="time-strategy-select" :disabled="!timeBindingOf(field.path)" :value="timeBindingOf(field.path)?.strategy || ''" :aria-label="`${field.field} 生成规则`" @change="updateTimeStrategy(field, $event.target.value)"><option v-for="strategy in timeStrategiesForPath(field.path)" :key="strategy[0]" :value="strategy[0]">{{ strategy[1] }}</option></select></div></td></tr></tbody></table></div>
         <p class="binding-help">“业务基准时间”会将实况对齐到最近准点、将预报对齐到最近起报点；“按数据项间隔生成”从该基准按 <code>period_interval</code> 递增；“预报结束时间”使用业务基准时间加 <code>period</code>。指定时间执行仅覆盖本次计划触发时间。</p>
         <div class="binding-section-heading"><div><h2>系统值绑定</h2><p>选择任意 JSON 字段及执行值来源；后端不推断字段名称，也不生成业务随机值。</p></div></div>
         <div class="value-binding-editor">
@@ -724,25 +816,53 @@ function confirmDelete() {
         </div>
         <div class="notice"><b>执行规则：</b>一次任务执行会向每个已选 MQ 目标各发送一条报文；每条投递独立记录成功或失败，互不覆盖。</div>
       </section>
-      <template #footer><button class="button primary" :disabled="(activeTab === 'data' && !hasCompleteDataBinding()) || isPending(`update:messages:${selected.id}`)" @click="saveCurrentTab">{{ isPending(`update:messages:${selected.id}`) ? '正在保存…' : '保存草稿' }}</button></template>
-    </AppModal>
+      <template #footer><span class="save-hint">{{ changedSections.length ? `已修改：${changedSections.join('、')}` : '当前没有未保存修改' }}</span><button class="button primary" :disabled="(activeTab === 'data' && !hasCompleteDataBinding()) || isPending(`update:messages:${selected.id}`)" @click="saveCurrentTab">{{ isPending(`update:messages:${selected.id}`) ? '正在保存…' : '保存草稿' }}</button></template>
+    </AppDetailPage>
 
-    <AppModal v-if="canManage && dialog === 'create'" title="新建报文" @close="dialog = ''"><p class="muted">先创建基础草稿，随后通过可搜索的三级选择器关联数据源、数据项和要素项。</p><div class="form-grid"><label>报文名称（必填）<input v-model="createForm.name" autofocus placeholder="例如 weather_station_message" @input="createError = ''"></label><label>报文类型（必填）<select v-model="createForm.type"><option value="JSON">JSON 报文</option><option value="FILE">FILE 报文</option></select></label><label>业务描述<input v-model="createForm.description" placeholder="简要说明报文用途"></label></div><div class="notice">创建后自动进入“数据关联”，草稿完成关联前不能发布。</div><p v-if="createError" class="status-badge negative">{{ createError }}</p><template #footer><button class="button secondary" @click="dialog = ''">取消</button><button class="button primary" :disabled="isPending('create:messages')" @click="submitCreate">{{ isPending('create:messages') ? '正在创建…' : '创建并关联数据' }}</button></template></AppModal>
-    <AppModal v-if="canManage && dialog === 'delete' && selected" title="删除报文" @close="dialog = ''"><p>确定删除报文 <b>{{ selected.name }}</b> 吗？删除后无法恢复。</p><div v-if="referenceTasks.length" class="notice"><b>当前不能删除：</b>该报文仍被 {{ referenceTasks.length }} 个任务引用：{{ referenceTasks.map(item => item.name).join('、') }}。</div><div v-else class="notice">该报文没有被任务引用，确认后将从 PostgreSQL 删除。</div><template #footer><button class="button secondary" @click="dialog = ''">取消</button><button class="button danger" :disabled="referenceTasks.length || isPending(`remove:messages:${selected.id}`)" @click="confirmDelete">{{ isPending(`remove:messages:${selected.id}`) ? '正在删除…' : '确认删除' }}</button></template></AppModal>
-    <AppModal v-if="dialog === 'preview' && selected" title="数据库中的报文模板" wide @close="dialog = ''"><p class="muted">以下内容来自当前报文资源；真实执行生成的最终报文请在执行日志查看。</p><pre class="code-block">{{ form.content || selected.content }}</pre><template #footer><button class="button secondary" @click="dialog = ''">关闭</button></template></AppModal>
+    <AppDetailPage v-if="canManage && dialog === 'create'" title="新建报文" :before-close="confirmEditorClose" @close="dialog = ''"><p class="muted">先创建基础草稿，随后通过可搜索的三级选择器关联数据源、数据项和要素项。</p><div class="form-grid"><label>报文名称（必填）<input v-model="createForm.name" autofocus placeholder="例如 weather_station_message" @input="createError = ''"></label><label>报文类型（必填）<select v-model="createForm.type"><option value="JSON">JSON 报文</option><option value="FILE">FILE 报文</option></select></label><label>业务描述<input v-model="createForm.description" placeholder="简要说明报文用途"></label></div><div class="notice">创建后自动进入“数据关联”，草稿完成关联前不能发布。</div><p v-if="createError" class="status-badge negative">{{ createError }}</p><template #footer><button class="button secondary" @click="confirmEditorClose() && (dialog = '')">取消</button><button class="button primary" :disabled="isPending('create:messages')" @click="submitCreate">{{ isPending('create:messages') ? '正在创建…' : '创建并关联数据' }}</button></template></AppDetailPage>
+    <AppModal v-if="canManage && dialog === 'delete' && selected" title="删除报文" @close="dialog = ''"><p>确定删除报文 <b>{{ selected.name }}</b> 吗？删除后无法恢复。</p><div v-if="referenceTasks.length" class="notice"><b>当前不能删除：</b>该报文仍被 {{ referenceTasks.length }} 个任务引用：{{ referenceTasks.map(item => item.name).join('、') }}。</div><div v-else class="notice">该报文没有被任务引用，确认后将删除该配置。</div><template #footer><button class="button secondary" @click="dialog = ''">取消</button><button class="button danger" :disabled="referenceTasks.length || isPending(`remove:messages:${selected.id}`)" @click="confirmDelete">{{ isPending(`remove:messages:${selected.id}`) ? '正在删除…' : '确认删除' }}</button></template></AppModal>
+    <AppModal v-if="canManage && dialog === 'copy' && selected" title="复制报文" @close="dialog = ''">
+      <div class="copy-source-summary"><span>来源报文</span><b>{{ selected.name }}</b><small>{{ selected.type }} · {{ selected.status === 'PUBLISHED' ? '已发布' : '草稿' }}</small></div>
+      <div class="form-grid copy-form"><label>新报文名称（必填）<input v-model.trim="copyForm.name" autofocus @input="copyError = ''"></label></div>
+      <label class="copy-target-option"><input v-model="copyForm.includeDeliveryTargets" type="checkbox"><span><b>同时复制 MQ 投递目标</b><small>默认不复制，避免副本被误用于原有 Topic 和 Group。</small></span></label>
+      <p v-if="copyError" class="field-error" role="alert">{{ copyError }}</p>
+      <div class="notice">报文内容、数据关联、变量规则和文件配置将被复制；新报文固定保存为草稿。</div>
+      <template #footer><button class="button secondary" @click="dialog = ''">取消</button><button class="button primary" :disabled="isPending('create:messages')" @click="submitCopy">{{ isPending('create:messages') ? '正在复制…' : '复制并配置' }}</button></template>
+    </AppModal>
+    <AppModal v-if="dialog === 'pre-generate' && selected" :title="`预生成报文 · ${selected.name}`" wide @close="dialog = ''">
+      <div class="pre-generate-notice"><b>仅生成，不投递</b><span>使用已保存的模板替换系统值与时间规则，不会连接 MQ 或产生执行记录。</span></div>
+      <div class="pre-generate-layout">
+        <aside class="pre-generate-settings"><span class="panel-eyebrow">生成条件</span><label>计划触发时间<input v-model="preGenerateForm.plannedTriggerTime" type="datetime-local" step="1"></label><dl><div><dt>报文类型</dt><dd>{{ selected.type }}</dd></div><div><dt>数据源</dt><dd>{{ dataSourceName(selected) }}</dd></div><div><dt>数据项</dt><dd>{{ dataItemName(selected) }}</dd></div></dl><button class="button primary" @click="runPreGeneration">重新预生成</button><small>简单预生成不读取实时数据，也不改写源文件。</small></aside>
+        <section class="pre-generate-result"><div class="pre-generate-heading"><div><span class="panel-eyebrow">预生成结果 · 未投递</span><b v-if="preGeneration">已替换 {{ preGeneration.replacementCount }} 个字段</b></div><span v-if="preGeneration" class="status-badge positive">预生成完成</span></div>
+          <p v-if="preGenerateError" class="notice pre-generate-error" role="alert">{{ preGenerateError }}</p>
+          <template v-else-if="preGeneration"><div class="pre-generate-facts"><div><span>消息 ID</span><code>{{ preGeneration.messageId }}</code></div><div><span>生成时间</span><b>{{ preGeneration.generatedAt }}</b></div><div><span>计划触发时间</span><b>{{ preGeneration.plannedAt }}</b></div><div><span>业务基准时间</span><b>{{ preGeneration.businessBaseAt }}</b></div><div v-if="selected.type === 'FILE'"><span>预生成文件名</span><code>{{ preGeneration.fileName }}</code></div></div><div v-if="preGeneration.replacedPaths.length" class="replaced-paths"><span>本次替换</span><code v-for="path in preGeneration.replacedPaths" :key="path">{{ path }}</code></div><div v-if="preGeneration.warnings.length" class="notice warning-notice"><b>存在 {{ preGeneration.warnings.length }} 项未替换：</b>{{ preGeneration.warnings.join('；') }}</div><pre ref="preGenerateCode" class="code-block">{{ preGeneration.content }}</pre></template>
+        </section>
+      </div>
+      <template #footer><span class="save-hint">预生成结果不会保存</span><button class="button secondary" @click="dialog = ''">关闭</button></template>
+    </AppModal>
+    <AppModal v-if="editorPreview" title="模板原文 · 当前编辑内容" wide @close="editorPreview = false"><p class="notice subtle">这里展示未替换的模板变量；实际投递报文以执行记录为准。</p><pre class="code-block">{{ form.content }}</pre></AppModal>
   </main>
 </template>
 
 <style scoped>
+.review-summary { padding: 14px 16px; margin-bottom: 16px; border: 1px solid #e5e7eb; border-radius: 6px; background: #fafafa; font-size: 14px; }.review-summary > div { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 8px; }
+
 .message-list-card { padding: 0; overflow: hidden; }
 .list-toolbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; padding: 18px 20px; border-bottom: 1px solid #ebeef5; }
 .list-toolbar h2 { margin: 0; font-size: 17px; }.list-toolbar p { margin: 6px 0 0; color: #667085; }
 .filters { display: flex; align-items: flex-end; gap: 12px; }.filters label { display: block; color: #606266; font-size: 13px; font-weight: 600; }.filters label > span:first-child { display: block; margin-bottom: 7px; }
 .filters label { width: 300px; }
-.message-table { min-width: 1060px; table-layout: fixed; }.message-table th:nth-child(1) { width: 200px; }.message-table th:nth-child(2) { width: 185px; }.message-table th:nth-child(3) { width: 170px; }.message-table th:nth-child(4) { width: 245px; }.message-table th:nth-child(5) { width: 90px; }.message-table th:nth-child(6) { width: 170px; }
+.message-table { min-width: 960px; table-layout: fixed; }.message-table th:nth-child(1) { width: 170px; }.message-table th:nth-child(2) { width: 125px; }.message-table th:nth-child(3) { width: 140px; }.message-table th:nth-child(4) { width: 185px; }.message-table th:nth-child(5) { width: 80px; }.message-table th:nth-child(6) { width: 260px; }
 .message-table td { overflow: hidden; color: #4f6178; font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }.message-table th:first-child, .message-table td:first-child { padding-left: 20px; }.message-table th:last-child, .message-table td:last-child { padding-right: 20px; }.message-name { max-width: 100%; overflow: hidden; color: var(--management-link); font-size: 16px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .target-cell { color: #4f6178 !important; font-family: inherit; font-size: 15px; font-weight: 450; }
+.message-table td.status-cell { overflow: visible; text-overflow: clip; }
+.message-table .operation-cell { text-align: center; }
+.message-table .operation-cell .row-actions { justify-content: center; gap: 10px; }
 .message-detail { color: #465973; }
+.editor-status-strip { display: flex; min-height: 46px; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 12px; padding: 9px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fafafa; }
+.editor-status-strip > div { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: var(--type-form-label); }
+.issue-summary { padding: 4px 8px; border: 0; border-radius: 4px; background: var(--red-soft); color: var(--red); font-weight: 650; }
+.ready-summary { color: var(--green); font-size: var(--type-form-label); font-weight: 650; }
 .unified-detail { display: grid; gap: 16px; }
 .binding-overview { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); overflow: hidden; border: 1px solid #f0f0f0; border-radius: 8px; background: #fafafa; }.binding-overview > div { min-width: 0; padding: 13px 15px; border-right: 1px solid #f0f0f0; }.binding-overview > div:last-child { border-right: 0; }.binding-overview span, .binding-overview b, .binding-overview code { display: block; }.binding-overview span { color: #8c8c8c; font-size: 13px; }.binding-overview b { margin-top: 4px; color: #262626; font-size: 15px; }.binding-overview code { margin-top: 3px; color: #595959; font: 600 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .linked-elements-card { overflow: hidden; margin-top: 12px; border: 1px solid #f0f0f0; border-radius: 8px; background: #fff; }
@@ -758,6 +878,43 @@ function confirmDelete() {
 .linked-elements-empty { padding: 18px; color: #7d8a9d; text-align: center; font-size: 14px; }
 .inline-empty { padding: 17px; border: 1px dashed #d9d9d9; border-radius: 8px; color: #8c8c8c; text-align: center; background: #fafafa; font-size: 14px; }
 .message-detail .code-block { max-height: 320px; margin: 0; padding: 17px 18px; border-color: #30343b; border-radius: 6px; background: #1f2329; color: #d9e3f0; font-size: 14px; line-height: 1.65; }
+.copy-source-summary { padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fff; }
+.copy-source-summary span, .copy-source-summary b, .copy-source-summary small { display: block; }
+.copy-source-summary span, .copy-source-summary small { color: var(--muted); font-size: var(--type-form-label); }
+.copy-source-summary b { margin: 4px 0; color: var(--ink); font-size: 16px; }
+.copy-form { grid-template-columns: 1fr; margin-top: 16px; }
+.copy-target-option { display: flex; align-items: flex-start; gap: 10px; margin-top: 16px; padding: 13px 14px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; cursor: pointer; }
+.copy-target-option input { margin-top: 2px; }
+.copy-target-option b, .copy-target-option small { display: block; }
+.copy-target-option b { color: var(--ink); font-size: var(--type-form-body); }
+.copy-target-option small { margin-top: 3px; color: var(--muted); font-size: var(--type-form-label); }
+.pre-generate-notice { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; padding: 11px 14px; border: 1px solid #b7eb8f; border-radius: var(--radius-sm); background: var(--green-soft); color: #237804; }
+.pre-generate-notice b { flex: none; }
+.pre-generate-notice span { color: #3f6600; }
+.pre-generate-layout { display: grid; grid-template-columns: 270px minmax(0, 1fr); gap: 14px; min-height: 470px; }
+.pre-generate-settings, .pre-generate-result { min-width: 0; padding: 17px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fff; }
+.panel-eyebrow { color: #7c899d; font-size: 11px; font-weight: 750; letter-spacing: .08em; }
+.pre-generate-settings > label { display: block; margin-top: 16px; color: #526078; font-size: var(--type-form-label); font-weight: 650; }
+.pre-generate-settings input { display: block; width: 100%; height: var(--control-height); margin-top: 7px; padding: 0 10px; border: 1px solid #d9d9d9; border-radius: var(--radius-sm); color: var(--text); }
+.pre-generate-settings dl { margin: 17px 0; border-top: 1px solid var(--line); }
+.pre-generate-settings dl div { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.pre-generate-settings dt { color: var(--muted); font-size: var(--type-form-label); }
+.pre-generate-settings dd { margin: 3px 0 0; color: var(--ink); font-weight: 650; }
+.pre-generate-settings .button { width: 100%; }
+.pre-generate-settings > small { display: block; margin-top: 10px; color: var(--muted); line-height: 1.6; }
+.pre-generate-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 13px; }
+.pre-generate-heading b { display: block; margin-top: 4px; color: var(--ink); font-size: 15px; }
+.pre-generate-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 13px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fafafa; }
+.pre-generate-facts > div { min-width: 0; padding: 10px 12px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.pre-generate-facts span, .pre-generate-facts b, .pre-generate-facts code { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pre-generate-facts span { color: var(--muted); font-size: var(--type-form-label); }
+.pre-generate-facts b, .pre-generate-facts code { margin-top: 3px; color: var(--text); font-size: var(--type-form-body); }
+.replaced-paths { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 13px; }
+.replaced-paths > span { margin-right: 2px; color: var(--muted); font-size: var(--type-form-label); }
+.replaced-paths code { padding: 3px 7px; border: 1px solid #b7eb8f; border-radius: 4px; background: var(--green-soft); color: #237804; font-size: 11px; }
+.pre-generate-result .code-block { max-height: 410px; margin: 0; }
+.warning-notice { border-color: #ffd591; background: var(--amber-soft); color: #ad4e00; }
+.pre-generate-error { border-color: #ffccc7; background: var(--red-soft); color: var(--red); }
 body .page .message-detail .data-table th { padding: 12px 14px; background: #f7f9fc; color: #687890; font-size: 13px; font-weight: 650; letter-spacing: .01em; }
 body .page .message-detail .data-table td { padding: 15px 14px; color: #4d5f77; font-size: 15px; font-weight: 400; line-height: 1.55; }
 body .page .message-detail .detail-path { color: #2c486d; font: 600 14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
@@ -766,7 +923,7 @@ body .page .message-detail .detail-format { color: #5c6d84; font: 500 14px/1.55 
 .config-step-navigation { display: flex; align-items: center; justify-content: space-between; margin-top: 2px; }
 .config-step-label { color: #526078; font-size: var(--type-form-label); font-weight: 700; }
 .unsaved-indicator { display: inline-flex; align-items: center; gap: 6px; color: var(--amber); font-size: var(--type-form-label); font-weight: 650; }.unsaved-indicator::before { width: 6px; height: 6px; border-radius: 50%; background: currentColor; content: ''; }
-.tabs { margin-top: 7px; }.tabs button { min-height: var(--control-height); border-radius: 6px 6px 0 0; font-size: var(--type-form-body); font-weight: 600; }.config-panel { min-height: 360px; padding: 18px; border: 1px solid #f0f0f0; border-radius: 8px; background: #fff; }
+.tabs { position: sticky; z-index: 6; top: 0; margin-top: 7px; }.tabs button { min-height: var(--control-height); border-radius: 6px 6px 0 0; font-size: var(--type-form-body); font-weight: 600; }.tab-issue-count { display: inline-grid; min-width: 18px; height: 18px; margin-left: 6px; place-items: center; border-radius: 9px; background: var(--red); color: #fff; font-size: 10px; }.config-panel { min-height: 360px; padding: 18px; border: 1px solid #f0f0f0; border-radius: 8px; background: #fff; }
 .config-panel .form-grid label { font-size: var(--type-form-label); }.config-panel .form-grid input, .config-panel .form-grid select { min-height: var(--control-height); color: var(--text); font-size: var(--type-form-body); }.config-panel .code-editor { font-size: var(--type-form-body); }
 .published-edit-notice { display: flex; align-items: center; gap: 12px; margin: 0 0 12px; padding: 11px 14px; border: 1px solid #ffd591; border-radius: 6px; background: var(--amber-soft); color: #d46b08; font-size: var(--type-form-label); }.published-edit-notice b { flex: 0 0 auto; color: #ad4e00; }.published-edit-notice span { color: #874d00; }
 .data-linkage-grid { display: grid; grid-template-columns: 1.05fr 1fr 1.2fr; gap: 12px; }.linkage-step { min-width: 0; padding: 15px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fafafa; }.linkage-step.disabled { opacity: .62; }.linkage-step h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 4px; color: var(--ink); font-size: 15px; }.linkage-step h3 span { display: grid; width: 24px; height: 24px; place-items: center; border-radius: 50%; background: var(--blue); color: #fff; font-size: 12px; }.linkage-step > p { min-height: 40px; margin: 0 0 10px; color: var(--muted); font-size: var(--type-form-label); }.catalog-search { display: block; color: #526078; font-size: var(--type-form-label); font-weight: 650; }.catalog-search input { width: 100%; height: var(--control-height); margin-top: 7px; padding: 0 11px; border: 1px solid #d9d9d9; border-radius: var(--radius-sm); outline: 0; background: #fff; color: var(--text); font-size: var(--type-form-body); }.catalog-search input:focus { border-color: #1677ff; box-shadow: 0 0 0 3px #1677ff1a; }.catalog-options, .element-options { max-height: 270px; margin-top: 8px; overflow: auto; }.catalog-options > button { display: grid; width: 100%; gap: 3px; padding: 10px 11px; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; text-align: left; }.catalog-options > button:hover, .catalog-options > button.selected { border-color: #91caff; background: var(--blue-soft); }.catalog-options code { overflow: hidden; color: var(--management-link); font-size: var(--type-form-body); text-overflow: ellipsis; }.catalog-options b { overflow: hidden; color: var(--ink); font-size: var(--type-form-body); text-overflow: ellipsis; white-space: nowrap; }.catalog-options small, .element-options small { color: var(--muted); font-size: var(--type-form-label); }.catalog-empty { padding: 22px 8px; color: var(--muted); text-align: center; font-size: var(--type-form-body); }.select-all { width: 100%; margin-top: 8px; padding: 9px 10px; border: 1px solid #91caff; border-radius: var(--radius-sm); background: var(--blue-soft); color: var(--management-link); font-size: var(--type-form-label); text-align: left; }.element-options > label { display: flex; align-items: flex-start; gap: 8px; padding: 10px; border: 1px solid transparent; border-radius: var(--radius-sm); cursor: pointer; }.element-options > label:hover, .element-options > label.selected { border-color: #91caff; background: var(--blue-soft); }.element-options input { width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--blue); }.element-options span { min-width: 0; }.element-options b, .element-options small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.element-options b { font-size: var(--type-form-body); }.binding-summary { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-top: 14px; padding: 14px 16px; border: 1px solid #91caff; border-radius: var(--radius-md); background: var(--blue-soft); }.binding-summary b, .binding-summary small { display: block; }.binding-summary b { font-size: var(--type-form-body); }.binding-summary small { margin-top: 3px; color: var(--text); font-size: var(--type-form-label); }.binding-summary strong { flex: 0 0 auto; color: var(--management-link); font-size: var(--type-form-body); }.selected-element-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }.selected-element-chips span { padding: 4px 8px; border: 1px solid #91caff; border-radius: 4px; background: #fff; color: var(--management-link); font-size: var(--type-form-label); }
@@ -775,6 +932,7 @@ body .page .message-detail .detail-format { color: #5c6d84; font: 500 14px/1.55 
 .target-tabs { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; border-bottom: 1px solid var(--line); }.target-tabs button { min-width: 210px; padding: 10px 13px; border: 1px solid var(--line); border-bottom: 2px solid transparent; border-radius: var(--radius-sm) var(--radius-sm) 0 0; background: #f7f9fc; color: var(--text); text-align: left; }.target-tabs button:hover { border-color: #a9bcf5; }.target-tabs button.active { border-color: #a9bcf5; border-bottom-color: var(--blue); background: var(--blue-soft); color: var(--ink); }.target-tabs span, .target-tabs small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.target-tabs span { font-size: var(--type-form-body); font-weight: 650; }.target-tabs small { margin-top: 4px; color: var(--muted); font-size: var(--type-form-label); }.target-editor { padding: 16px; border: 1px solid #a9bcf5; border-radius: var(--radius-md); background: #f8faff; }.target-editor-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }.target-editor-heading b, .target-editor-heading small { display: block; }.target-editor-heading b { color: var(--ink); font-size: 15px; }.target-editor-heading small { margin-top: 3px; color: var(--muted); font-size: var(--type-form-label); }.target-editor-heading > span { padding: 4px 8px; border-radius: 7px; background: var(--blue-soft); color: var(--management-link); font-size: var(--type-form-label); }
 .topic-field, .group-field { min-width: 0; }.topic-combobox, .group-combobox { position: relative; margin-top: 7px; }.config-panel .form-grid .topic-combobox input, .config-panel .form-grid .group-combobox input { margin-top: 0; }.topic-suggestions, .group-suggestions { position: absolute; z-index: 8; top: calc(100% + 4px); right: 0; left: 0; max-height: 240px; padding: 4px; overflow-y: auto; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; box-shadow: 0 6px 16px #0000001f; }.topic-suggestions button, .group-suggestions button { display: block; width: 100%; padding: 9px 10px; overflow: hidden; border: 0; border-radius: 4px; background: transparent; color: var(--text); font: 500 var(--type-form-body)/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: left; text-overflow: ellipsis; white-space: nowrap; }.topic-suggestions button:hover, .topic-suggestions button.active, .group-suggestions button:hover, .group-suggestions button.active { background: var(--blue-soft); color: var(--management-link); }.topic-empty, .group-empty { display: block; padding: 10px; color: var(--muted); font-size: var(--type-form-label); text-align: center; }.topic-hint, .group-hint { display: block; margin-top: 6px; color: var(--muted); font-size: var(--type-form-label); font-weight: 400; }
 .time-binding-guide { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; align-items: center; gap: 12px; margin-bottom: 14px; padding: 14px 16px; border: 1px solid #a9bcf5; border-radius: var(--radius-md); background: var(--blue-soft); }.time-binding-guide span, .time-binding-guide b { display: block; }.time-binding-guide span { margin-bottom: 3px; color: var(--text); font-size: var(--type-form-label); }.time-binding-guide b { color: var(--ink); font-size: var(--type-form-body); }.time-binding-guide strong { color: var(--management-link); font-size: var(--type-form-body); white-space: nowrap; }.time-binding-table { min-width: 960px; table-layout: fixed; }.time-binding-table th:nth-child(1) { width: 62px; }.time-binding-table th:nth-child(2) { width: 145px; }.time-binding-table th:nth-child(3) { width: 320px; }.time-binding-table th:nth-child(4) { width: 190px; }.time-binding-table th:nth-child(5) { width: 220px; }.time-binding-table td { height: 62px; }.time-binding-table tbody tr.active td { background: #f5f8ff; }.time-binding-table input[type='checkbox'] { width: 16px; height: 16px; accent-color: var(--blue); }.time-binding-table code { color: var(--management-link); font-size: var(--type-form-body); }
+.binding-select-all { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }.binding-select-all input { flex: 0 0 auto; margin: 0; }
 .time-strategy-control { position: relative; display: flex; width: 100%; min-width: 190px; height: var(--control-height); align-items: center; padding: 0 34px 0 11px; border: 1px solid #d9d9d9; border-radius: var(--radius-sm); background: #fff; transition: border-color .18s, box-shadow .18s, background .18s; }.time-strategy-control:hover { border-color: #91caff; }.time-strategy-control:focus-within { border-color: #1677ff; box-shadow: 0 0 0 3px #1677ff1a; }.time-strategy-control::after { position: absolute; top: 50%; right: 13px; width: 6px; height: 6px; border-right: 1.5px solid #606266; border-bottom: 1.5px solid #606266; content: ''; pointer-events: none; transform: translateY(-70%) rotate(45deg); }.time-strategy-control > b { display: block; min-width: 0; overflow: hidden; color: var(--text); font-size: var(--type-form-body); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }.time-strategy-control.disabled { background: #f5f5f5; }.time-strategy-control.disabled > b { color: var(--quiet); }.time-strategy-control.disabled::after { border-color: var(--quiet); }.time-strategy-select { position: absolute; z-index: 1; inset: 0; width: 100%; height: 100%; cursor: pointer; opacity: 0; }.time-strategy-select:disabled { cursor: not-allowed; }.binding-help { margin: 12px 0 0; color: var(--text); font-size: var(--type-form-label); }.binding-help code { color: var(--management-link); }
 .binding-section-heading { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--line); }.binding-section-heading h2 { margin: 0; color: var(--ink); font-size: 17px; }.binding-section-heading p { margin: 5px 0 0; color: var(--muted); font-size: var(--type-form-label); }.value-binding-editor { display: grid; grid-template-columns: minmax(260px, 1.7fr) minmax(170px, 1fr) minmax(130px, .7fr) minmax(170px, 1fr) auto; align-items: end; gap: 10px; margin: 14px 0; padding: 15px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fafbfd; }.value-binding-editor label { min-width: 0; color: #526078; font-size: var(--type-form-label); font-weight: 650; }.value-binding-editor select, .value-binding-editor input { width: 100%; height: var(--control-height); margin-top: 7px; padding: 0 11px; border: 1px solid #d9e0ea; border-radius: var(--radius-sm); background: #fff; color: var(--text); font-size: var(--type-form-body); }.value-binding-editor .button { height: var(--control-height); white-space: nowrap; }.value-binding-table { min-width: 800px; }.value-binding-table code { color: var(--management-link); font-size: var(--type-form-body); }
 .file-template-panel .form-grid { margin-top: 18px; }
@@ -783,5 +941,5 @@ body .page .message-detail .detail-format { color: #5c6d84; font: 500 14px/1.55 
 .file-generation-flow span { padding: 7px 11px; border-radius: var(--radius-sm); background: #fff; }.file-generation-flow b { color: #7894e9; }
 .file-inspection-result { display: flex; align-items: stretch; gap: 10px; margin-top: 16px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fafbfd; }.file-inspection-result > div, .file-inspection-result button { min-width: 150px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; text-align: left; }.file-inspection-result button { cursor: pointer; }.file-inspection-result button.selected { border-color: var(--blue); background: var(--blue-soft); }.file-inspection-result span, .file-inspection-result b, .file-inspection-result small { display: block; }.file-inspection-result span, .file-inspection-result small { color: var(--muted); font-size: var(--type-form-label); }.file-inspection-result b { margin: 4px 0; color: var(--ink); font-size: var(--type-form-body); }
 @media (max-width: 1100px) { .data-linkage-grid { grid-template-columns: 1fr; }.linkage-step > p { min-height: 0; }.file-generation-flow { align-items: stretch; flex-direction: column; }.file-generation-flow b { display: none; }.value-binding-editor { grid-template-columns: 1fr 1fr; } }
-@media (max-width: 900px) { .list-toolbar, .filters { align-items: stretch; flex-direction: column; }.filters label { width: 100%; }.binding-overview { grid-template-columns: 1fr; }.binding-overview > div { border-right: 0; border-bottom: 1px solid #e7ecf3; }.linked-elements-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }.time-binding-guide { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 900px) { .list-toolbar, .filters { align-items: stretch; flex-direction: column; }.filters label { width: 100%; }.binding-overview { grid-template-columns: 1fr; }.binding-overview > div { border-right: 0; border-bottom: 1px solid #e7ecf3; }.linked-elements-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }.time-binding-guide { grid-template-columns: 1fr 1fr; }.pre-generate-layout { grid-template-columns: 1fr; }.pre-generate-facts { grid-template-columns: 1fr; } }
 </style>

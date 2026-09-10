@@ -1,5 +1,8 @@
 <script setup>
+import ListFilters from '../components/ListFilters.vue'
+import ListPagination from '../components/ListPagination.vue'
 import { computed, ref, watch } from 'vue'
+import {useListState} from '../list-state.mjs'
 import AppModal from '../components/AppModal.vue'
 import SearchInput from '../components/SearchInput.vue'
 import DetailHeader from '../components/DetailHeader.vue'
@@ -16,9 +19,7 @@ const loadingDetail = ref(false)
 const detail = ref(null)
 const detailError = ref('')
 const requestedItem = ref(null)
-const keyword = ref('')
-const page = ref(1)
-const pageSize = 10
+const {keyword, page, pageSize} = useListState('data')
 const isPending = key => props.pendingActions.has(key)
 
 const detailFields = [
@@ -36,10 +37,9 @@ const filteredItems = computed(() => {
   if (!value) return props.items
   return props.items.filter(item => searchableFields.some(field => String(item[field] || '').toLowerCase().includes(value)))
 })
-const totalPages = computed(() => Math.max(1, Math.ceil(filteredItems.value.length / pageSize)))
-const visibleItems = computed(() => filteredItems.value.slice((page.value - 1) * pageSize, page.value * pageSize))
+const totalPages = computed(() => Math.max(1, Math.ceil(filteredItems.value.length / pageSize.value)))
+const visibleItems = computed(() => filteredItems.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
 const elements = computed(() => detail.value?.elements || [])
-watch(keyword, () => { page.value = 1 })
 watch(totalPages, value => { if (page.value > value) page.value = value })
 
 function loadGroup(item) {
@@ -72,18 +72,18 @@ function commonDetailValue(field) {
 
 <template>
   <main class="page data-item-page">
-    <div class="page-heading"><div><h1>数据项管理</h1><p>数据直接来自 msc_sys.element_item_cfg，并按数据项编码与数据源编码聚合展示。</p></div></div>
+    <div class="page-heading"><div><h1>数据项管理</h1><p>按数据项与数据源查看要素配置。</p></div></div>
     <section class="card data-list-card">
-      <div class="card-heading"><div><h2>数据项列表</h2><p>每行展示一个数据项及其所属数据源，点击编码可查看完整要素项。</p></div><label class="search-box"><span class="search-label">搜索数据项</span><SearchInput v-model="keyword" aria-label="搜索数据项" placeholder="输入编码、名称或数据源" /></label></div>
-      <div class="table-scroll"><table class="data-table management-table"><thead><tr><th>数据项编码</th><th>数据项中文名称</th><th>数据源编码</th><th>数据源中文名称</th><th class="align-right">操作</th></tr></thead><tbody>
+      <ListFilters><label><span>搜索数据项</span><SearchInput v-model="keyword" aria-label="搜索数据项" placeholder="输入编码、名称或数据源" /></label><button v-if="keyword" class="link-button" @click="keyword = ''">清除筛选</button></ListFilters>
+      <div class="table-scroll"><table class="data-table management-table"><thead><tr><th>数据项编码</th><th>数据项名称</th><th class="responsive-low">数据源编码</th><th>数据源名称</th><th class="align-right">操作</th></tr></thead><tbody>
         <tr v-for="item in visibleItems" :key="item.id">
           <td><button class="management-primary item-code" :disabled="isPending(`load-data-item:${item.id}`)" @click="loadGroup(item)">{{ item.dataItemCode || '—' }}</button></td>
-          <td class="management-body">{{ item.dataItemName || '—' }}</td><td><code>{{ item.sourceCode || '—' }}</code></td><td class="management-body">{{ item.sourceCodeName || '—' }}</td>
+          <td class="management-body">{{ item.dataItemName || '—' }}</td><td class="responsive-low"><code>{{ item.sourceCode || '—' }}</code></td><td class="management-body">{{ item.sourceCodeName || '—' }}</td>
           <td class="align-right"><div class="row-actions"><button class="link-button" :disabled="isPending(`load-data-item:${item.id}`)" @click="loadGroup(item)">{{ isPending(`load-data-item:${item.id}`) ? '正在加载…' : '查看' }}</button></div></td>
         </tr>
-        <tr v-if="!visibleItems.length"><td colspan="5" class="empty-state">没有匹配的数据项。</td></tr>
+        <tr v-if="!visibleItems.length"><td colspan="5" class="empty-state">{{ keyword ? '没有匹配的数据项。' : '当前暂无数据项。' }}<br><button v-if="keyword" class="link-button empty-state-action" @click="keyword = ''">清除筛选</button></td></tr>
       </tbody></table></div>
-      <div class="pagination"><span>共 {{ filteredItems.length }} 个数据项，第 {{ page }} / {{ totalPages }} 页</span><div><button class="button secondary small" :disabled="page <= 1" @click="page--">上一页</button><button class="button secondary small" :disabled="page >= totalPages" @click="page++">下一页</button></div></div>
+      <ListPagination v-model:page="page" v-model:page-size="pageSize" :total="filteredItems.length" :total-pages="totalPages" />
     </section>
 
     <AppModal v-if="dialog === 'view'" title="数据项详情" wide @close="dialog = ''">

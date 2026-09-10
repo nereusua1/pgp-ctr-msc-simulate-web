@@ -17,16 +17,16 @@ function submit() {
     <section class="login-brand-panel">
       <div class="login-brand"><span>MS</span><div><b>报文模拟系统</b><small>MESSAGE SIMULATION</small></div></div>
       <div class="brand-copy"><p>MESSAGE SIMULATION CONSOLE</p><h1>把每一次模拟投递，<br>变成可追溯的执行证据。</h1><span>面向测试与联调场景的企业级报文模拟控制台</span></div>
-      <div class="brand-foot">测试环境 · 企业内部系统</div>
+      <div class="brand-foot">企业内部系统</div>
     </section>
     <section class="login-form-panel">
       <form class="login-card" @submit.prevent="submit">
-        <header><span class="mobile-logo">MS</span><div><small>WELCOME BACK</small><h2>登录控制台</h2><p>使用系统账号进入测试环境</p></div></header>
+        <header><span class="mobile-logo">MS</span><div><small>WELCOME BACK</small><h2>登录控制台</h2><p>使用系统账号登录</p></div></header>
         <div v-if="error" class="login-error" role="alert">{{ error }}</div>
         <label>用户名<input v-model="form.username" name="username" autocomplete="username" autofocus placeholder="请输入用户名"></label>
         <label>密码<input v-model="form.password" name="password" type="password" autocomplete="current-password" placeholder="请输入密码"></label>
         <button class="login-button" type="submit" :disabled="loading || !form.username || !form.password">{{ loading ? '正在登录…' : '登录' }}</button>
-        <p class="login-hint">账号由系统管理员在 Nacos 中统一配置</p>
+        <p class="login-hint">报文模拟系统<br>请联系系统管理员获取账号</p>
       </form>
     </section>
   </main>

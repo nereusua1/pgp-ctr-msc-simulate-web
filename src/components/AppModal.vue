@@ -1,12 +1,13 @@
 <script setup>
-import { getCurrentInstance, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, getCurrentInstance, onBeforeUnmount, onMounted, ref } from 'vue'
 
-const props = defineProps({ title: { type: String, required: true }, wide: Boolean, beforeClose: { type: Function, default: null } })
+const props = defineProps({ title: { type: String, required: true }, wide: Boolean, centered: Boolean, beforeClose: { type: Function, default: null } })
 const emit = defineEmits(['close'])
 const closeButton = ref(null)
 const modalCard = ref(null)
 const closing = ref(false)
 const titleId = `modal-title-${getCurrentInstance()?.uid || Date.now()}`
+const isCentered = computed(() => props.centered || /^(删除|复制|立即执行|历史补跑)/.test(props.title))
 let previousOverflow = ''
 let previousFocus = null
 let closeTimer
@@ -35,7 +36,10 @@ onMounted(() => {
   previousOverflow = document.body.style.overflow
   document.body.style.overflow = 'hidden'
   document.addEventListener('keydown', onKeydown)
-  closeButton.value?.focus()
+  const input = modalCard.value?.querySelector('input:not([disabled]), select:not([disabled]), textarea:not([disabled])')
+  const cancel = [...(modalCard.value?.querySelectorAll('button') || [])].find(button => button.textContent.trim() === '取消')
+  if (props.title.includes('删除')) (cancel || closeButton.value)?.focus()
+  else (input || closeButton.value)?.focus()
 })
 
 onBeforeUnmount(() => {
@@ -47,8 +51,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="modal-backdrop" :class="{ closing }" @click.self="requestClose">
-    <section ref="modalCard" class="modal-card" :class="{ wide, closing }" role="dialog" aria-modal="true" :aria-labelledby="titleId" tabindex="-1">
+  <div class="modal-backdrop" :class="{ closing, centered: isCentered }" @click.self="requestClose">
+    <section ref="modalCard" class="modal-card" :class="{ wide, centered: isCentered, closing }" role="dialog" aria-modal="true" :aria-labelledby="titleId" tabindex="-1">
       <header class="modal-header">
         <h2 :id="titleId">{{ title }}</h2>
         <div class="modal-header-actions">

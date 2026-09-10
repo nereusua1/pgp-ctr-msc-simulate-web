@@ -1,6 +1,13 @@
 <script setup>
-import {computed, reactive, ref, watch} from 'vue'
+import {useFormLeaveGuard} from '../form-leave-guard.mjs'
+import ListFilters from '../components/ListFilters.vue'
+import ListPagination from '../components/ListPagination.vue'
+import {computed, onBeforeUnmount, onMounted, reactive, ref, watch} from 'vue'
 import AppModal from '../components/AppModal.vue'
+import AppDetailPage from '../components/AppDetailPage.vue'
+import {setRoute} from '../page-route.mjs'
+import {useListState} from '../list-state.mjs'
+import {taskFormError, latestRequest} from '../interaction-policy.mjs'
 import AppIcon from '../components/AppIcon.vue'
 import SearchInput from '../components/SearchInput.vue'
 import StatusBadge from '../components/StatusBadge.vue'
@@ -17,15 +24,20 @@ const props = defineProps({
   selectedTaskId: {type: String, default: ''},
   pendingActions: {type: Object, default: () => new Set()},
   canManage: {type: Boolean, default: false}
+  ,routeId: {type: String, default: ''}
+  ,components: {type: Array, default: () => []}
 })
-const emit = defineEmits(['create', 'run', 'preview-time', 'update', 'remove', 'load-messages', 'load-task-execution-overview'])
+const emit = defineEmits(['editing-state', 'create', 'run', 'preview-time', 'update', 'remove', 'load-messages', 'load-task-execution-overview', 'batch-update'])
 const selectedId = ref('')
 const dialog = ref('')
+const formError = ref('')
+const runError = ref('')
+const batchIds = ref([])
+const batchResults = ref([])
+const {keyword, status: statusFilter, page, pageSize} = useListState('tasks')
 const messageFilter = ref('ALL')
 const dataItemFilter = ref('')
 const dataSourceFilter = ref('')
-const page = ref(1)
-const pageSize = 10
 const form = reactive({name: '', messageId: '', scheduleType: 'FIXED_RATE', schedule: '10', scheduleYear: '*'})
 const runForm = reactive({mode: 'MANUAL_CURRENT', plannedTriggerTime: ''})
 const timePreview = ref(null)
@@ -61,9 +73,27 @@ const cronDescription = computed(() => [
   cron.second === '*' ? '每秒' : (cron.second.startsWith('*/') ? optionLabel(secondOptions, cron.second) : `${cron.second} 秒`)
 ].join(' · '))
 const selected = computed(() => props.tasks.find(item => item.id === selectedId.value))
-const totalPages = computed(() => Math.max(1, Math.ceil(props.tasks.length / pageSize)))
-const visibleTasks = computed(() => props.tasks.slice((page.value - 1) * pageSize, page.value * pageSize))
+const filteredTasks = computed(() => props.tasks.filter(task => (statusFilter.value === 'ALL' || task.status === statusFilter.value) &&
+  [task.name, props.templates.find(item => item.id === task.messageId)?.name].some(value => String(value || '').toLowerCase().includes(keyword.value.trim().toLowerCase()))))
+const totalPages = computed(() => Math.max(1, Math.ceil(filteredTasks.value.length / pageSize.value)))
+const visibleTasks = computed(() => filteredTasks.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
 const selectedTemplate = computed(() => props.templates.find(item => item.id === selected.value?.messageId))
+const currentTargets = computed(() => selectedTemplate.value?.deliveryTargets || [])
+const manualUnavailable = computed(() => !selectedTemplate.value ? '未找到关联报文模板' :
+  !currentTargets.value.length ? '报文模板尚未配置消息云投递目标' :
+  currentTargets.value.some(target => !props.components.some(item => item.id === target.componentId && item.status !== 'DISABLED')) ? '投递目标不存在或已停用' : '')
+function toggleBatch(id) {
+  batchIds.value = batchIds.value.includes(id) ? batchIds.value.filter(value => value !== id) : [...batchIds.value, id]
+}
+function batchEnabled(enabled) {
+  const items = visibleTasks.value.filter(item => batchIds.value.includes(item.id))
+  if (!items.length) return
+  emit('batch-update', {items, enabled, onCompleted: results => {
+    batchResults.value = results
+    batchIds.value = results.filter(item => !item.success).map(item => item.id)
+  }})
+}
+watch([page, keyword, statusFilter, pageSize], () => { batchIds.value = []; batchResults.value = [] })
 const selectedExecutions = computed(() => executionOverview.value?.recentExecutions || [])
 const latestExecution = computed(() => selectedExecutions.value[0])
 const messages = computed(() => props.executionMessages.filter(item => (
@@ -124,7 +154,8 @@ function onScheduleTypeChange() {
 }
 
 function openCreate() {
-  const template = props.templates[0]
+  const template = null
+  formError.value = ''
   dataItemFilter.value = ''
   dataSourceFilter.value = ''
   Object.assign(form, {
@@ -136,8 +167,12 @@ function openCreate() {
   })
   dialog.value = 'create'
 }
+function handleGlobalCreate(event) { if (event.detail?.page === 'tasks') openCreate() }
+onMounted(() => window.addEventListener('global-create', handleGlobalCreate))
+onBeforeUnmount(() => window.removeEventListener('global-create', handleGlobalCreate))
 
 function openEdit(task) {
+  formError.value = ''
   selectedId.value = task.id
   const template = props.templates.find(item => item.id === task.messageId)
   const binding = bindingOf(template)
@@ -155,22 +190,26 @@ function openEdit(task) {
 }
 
 function submit() {
-  if (!form.name.trim() || !form.messageId) return
+  formError.value = taskFormError(form)
+  if (formError.value) return
   if (dialog.value === 'edit' && selected.value) {
     const updated = {...selected.value, ...form}
     delete updated.componentId
     delete updated.producerGroup
     delete updated.topic
-    emit('update', updated)
+    emit('update', updated, result => {
+      if (result?.success) dialog.value = props.routeId ? 'detail' : ''
+      else formError.value = result?.error || '保存失败，输入已保留'
+    })
   } else {
-    emit('create', {...form, status: 'DRAFT'})
+    emit('create', {...form, status: 'DRAFT'}, () => { dialog.value = '' }, error => { formError.value = error })
   }
-  dialog.value = ''
 }
 
 function openDetail(task) {
   selectedId.value = task.id
   dialog.value = 'detail'
+  setRoute('tasks', task.id)
   executionOverview.value = null
   loadExecutionOverview(task.id)
 }
@@ -192,11 +231,18 @@ function toLocalDateTimeInput(date) {
 }
 
 function openRun(task) {
+  runError.value = ''
   selectedId.value = task.id
-  Object.assign(runForm, {mode: 'MANUAL_CURRENT', plannedTriggerTime: ''})
+  Object.assign(runForm, {mode: props.canManage ? 'MANUAL_CURRENT' : 'MANUAL_SPECIFIED', plannedTriggerTime: ''})
   timePreview.value = null
   dialog.value = 'run'
   previewRunTime()
+}
+
+function openHistorical(task) {
+  openRun(task)
+  runForm.mode = 'MANUAL_SPECIFIED'
+  timePreview.value = null
 }
 
 function useYesterday() {
@@ -215,14 +261,19 @@ function executionRequest() {
   }
 }
 
+const beginTimePreview = latestRequest()
+watch(() => [runForm.mode, runForm.plannedTriggerTime], () => { beginTimePreview(); timePreview.value = null }, {flush: 'sync'})
 function previewRunTime() {
   if (!selected.value || (runForm.mode === 'MANUAL_SPECIFIED' && !runForm.plannedTriggerTime)) return
-  emit('preview-time', {task: selected.value, request: executionRequest(), onLoaded: result => { timePreview.value = result }})
+  const isLatest = beginTimePreview()
+  emit('preview-time', {task: selected.value, request: executionRequest(), onLoaded: result => { if (isLatest()) timePreview.value = result }})
 }
 
 function confirmRun() {
-  if (!selected.value || (runForm.mode === 'MANUAL_SPECIFIED' && !runForm.plannedTriggerTime)) return
-  emit('run', {task: selected.value, request: executionRequest(), onCompleted: () => { dialog.value = 'detail'; loadExecutionOverview(selected.value?.id) }})
+  if (!selected.value || !timePreview.value || (!props.canManage && runForm.mode !== 'MANUAL_SPECIFIED') ||
+      (runForm.mode === 'MANUAL_SPECIFIED' && !runForm.plannedTriggerTime)) return
+  if (manualUnavailable.value) { runError.value = manualUnavailable.value; return }
+  emit('run', {task: selected.value, request: executionRequest(), onCompleted: () => { dialog.value = 'detail'; loadExecutionOverview(selected.value?.id) }, onFailed: error => { runError.value = error }})
 }
 
 function openDelete(task) {
@@ -235,6 +286,7 @@ function confirmDelete() {
   emit('remove', selected.value.id, () => {
     selectedId.value = ''
     dialog.value = ''
+    setRoute('tasks')
   })
 }
 
@@ -248,39 +300,57 @@ function openMessages() {
 
 function setTaskEnabled(task, enabled, closeDialog = false) {
   if (!task) return
-  emit('update', {...task, status: enabled ? 'ENABLED' : 'DISABLED'})
-  if (closeDialog) dialog.value = ''
+  emit('update', {...task, status: enabled ? 'ENABLED' : 'DISABLED'}, result => {
+    if (result?.success && closeDialog) dialog.value = ''
+  })
 }
 
 watch(() => props.selectedTaskId, id => {
   if (id && props.tasks.some(item => item.id === id)) openDetail(props.tasks.find(item => item.id === id))
 }, {immediate: true})
+watch(() => props.routeId, id => {
+  if (!id && dialog.value === 'detail') dialog.value = ''
+})
 watch([dataItemFilter, dataSourceFilter], () => {
-  if (!filteredTemplates.value.some(item => item.id === form.messageId)) form.messageId = filteredTemplates.value[0]?.id || ''
+  if (!filteredTemplates.value.some(item => item.id === form.messageId)) form.messageId = ''
 })
 watch(totalPages, value => { if (page.value > value) page.value = value })
 watch(cron, syncCronExpression, {deep: true})
+
+const {dirty: formDirty, confirmClose: confirmFormClose} = useFormLeaveGuard(
+  () => ['create', 'edit'].includes(dialog.value),
+  () => JSON.stringify({form, cron}),
+  value => emit('editing-state', value)
+)
 </script>
 
 <template>
   <main class="page">
-    <div class="page-heading">
+    <div v-show="!routeId" class="page-heading">
       <div><h1>任务管理</h1>
         <p>任务配置报文、RocketMQ 投递目标与调度方式；执行结果来自后端实际投递记录。</p></div>
       <button v-if="canManage" class="button primary" @click="openCreate"><AppIcon name="plus" :size="16" />新建任务</button>
     </div>
-    <section class="card task-list-card">
-      <div class="card-heading">
-        <div><h2>任务列表</h2>
-          <p>点击详情查看配置及数据库中的最近执行结果。</p></div>
+    <section v-show="!routeId" class="card task-list-card">
+      <div v-if="canManage && batchIds.length" class="task-batch-actions">
+        <span>已选当前页 {{ batchIds.length }} 个任务</span><button class="link-button" @click="batchIds = []">取消选择</button>
+        <button class="link-button" :disabled="isPending('batch:tasks')" @click="batchIds = visibleTasks.map(item => item.id)">选择当前页</button>
+        <button class="button secondary small" :disabled="!batchIds.length || isPending('batch:tasks')" @click="batchEnabled(true)">批量启用</button>
+        <button class="button secondary small" :disabled="!batchIds.length || isPending('batch:tasks')" @click="batchEnabled(false)">批量停用</button>
       </div>
-      <div class="table-scroll">
+      <div v-if="batchResults.length" class="notice" role="status"><p v-for="result in batchResults" :key="result.id">{{ result.name }}：{{ result.success ? '已完成' : result.error }}</p></div>
+      <ListFilters>
+        <label>搜索任务<SearchInput v-model="keyword" aria-label="搜索任务" placeholder="任务或报文模板名称" /></label>
+        <label>自动调度状态<select v-model="statusFilter"><option value="ALL">全部</option><option value="ENABLED">已启用</option><option value="DISABLED">已停用</option><option value="DRAFT">草稿</option></select></label>
+        <button v-if="keyword || statusFilter !== 'ALL'" class="link-button" @click="keyword = ''; statusFilter = 'ALL'">清除筛选</button>
+      </ListFilters>
+      <div class="table-scroll" :class="{'is-loading': isPending('batch:tasks')}">
         <table class="data-table management-table task-table">
           <thead>
           <tr>
-            <th>任务</th>
+            <th><input v-if="canManage" class="task-selection" type="checkbox" aria-label="选择当前页全部任务" :checked="visibleTasks.length > 0 && batchIds.length === visibleTasks.length" :indeterminate="batchIds.length > 0 && batchIds.length < visibleTasks.length" :disabled="!visibleTasks.length || isPending('batch:tasks')" @change="batchIds = $event.target.checked ? visibleTasks.map(item => item.id) : []">任务</th>
             <th>关联报文</th>
-            <th>调度</th>
+            <th class="responsive-low">调度</th>
             <th>状态</th>
             <th class="align-right">操作</th>
           </tr>
@@ -288,10 +358,11 @@ watch(cron, syncCronExpression, {deep: true})
           <tbody>
           <tr v-for="task in visibleTasks" :key="task.id" :class="{ selected: selected?.id === task.id }">
             <td>
+              <input v-if="canManage" class="task-selection" type="checkbox" :aria-label="'选择任务 ' + task.name" :checked="batchIds.includes(task.id)" :disabled="isPending('batch:tasks')" @change="toggleBatch(task.id)">
               <button class="management-primary task-name-button" @click="openDetail(task)">{{ task.name }}</button>
             </td>
             <td class="related-message">{{ templates.find(item => item.id === task.messageId)?.name || '未关联报文' }}</td>
-            <td><code class="schedule-value">{{ scheduleText(task) }}</code></td>
+            <td class="responsive-low"><code class="schedule-value">{{ scheduleText(task) }}</code></td>
             <td>
               <StatusBadge :status="task.status"/>
             </td>
@@ -307,17 +378,19 @@ watch(cron, syncCronExpression, {deep: true})
               </div>
             </td>
           </tr>
-          <tr v-if="!tasks.length">
-            <td colspan="5" class="empty-state">{{ canManage ? '后端尚无任务，请先新建任务。' : '当前暂无可执行任务。' }}</td>
+          <tr v-if="!visibleTasks.length">
+            <td colspan="5" class="empty-state"><template v-if="tasks.length">没有匹配的任务。<br><button class="link-button empty-state-action" @click="keyword = ''; statusFilter = 'ALL'">清除筛选</button></template><template v-else>{{ canManage ? '还没有任务。' : '当前暂无可执行任务。' }}<br><button v-if="canManage" class="link-button empty-state-action" @click="openCreate">新建第一个任务</button></template></td>
           </tr>
           </tbody>
         </table>
       </div>
-      <div class="pagination"><span>共 {{ tasks.length }} 个任务，第 {{ page }} / {{ totalPages }} 页</span><div><button class="button secondary small" :disabled="page <= 1" @click="page--">上一页</button><button class="button secondary small" :disabled="page >= totalPages" @click="page++">下一页</button></div></div>
+      <ListPagination v-model:page="page" v-model:page-size="pageSize" :total="filteredTasks.length" :total-pages="totalPages" />
     </section>
 
+    <p v-if="routeId && !selected" class="notice negative">任务不存在或暂时无法读取。<button class="link-button" @click="setRoute('tasks')">返回任务列表</button></p>
     <AppModal v-if="canManage && (dialog === 'create' || dialog === 'edit')"
-              :title="dialog === 'edit' ? `修改任务 · ${selected?.name}` : '新建任务'" @close="dialog = ''">
+              :title="dialog === 'edit' ? `修改任务 · ${selected?.name}` : '新建任务'" @close="dialog = ''" :before-close="confirmFormClose">
+      <p v-if="formDirty" class="muted" role="status">有未保存修改</p><p v-if="formError" role="alert" class="notice">{{ formError }}</p>
       <section class="message-query">
         <div class="query-heading">
           <div><h3>筛选报文</h3>
@@ -332,13 +405,14 @@ watch(cron, syncCronExpression, {deep: true})
       <div class="form-grid"><label>任务名称<input v-model="form.name"
                                                    placeholder="输入任务名称"></label><label>报文<select
           v-model="form.messageId" :disabled="!messageOptions.length">
+        <option value="" disabled>请选择报文模板</option>
         <option v-for="item in messageOptions" :key="item.id" :value="item.id">{{ item.name }} ·
           {{ bindingOf(item).dataItemName || bindingOf(item).dataItemCode || '未关联数据项' }} ·
           {{ bindingOf(item).sourceName || bindingOf(item).sourceCode || '未关联数据源' }}
         </option>
       </select><small class="field-help">匹配 {{ filteredTemplates.length }} 份报文，单次最多展示 50
         份</small></label><label>调度方式<select v-model="form.scheduleType" @change="onScheduleTypeChange">
-        <option value="FIXED_RATE">Fixed rate</option>
+        <option value="FIXED_RATE">固定间隔</option>
         <option value="CRON">Cron</option>
         <option value="MANUAL">手工执行</option>
       </select></label><label v-if="form.scheduleType === 'FIXED_RATE'">执行间隔（秒）<input
@@ -387,14 +461,15 @@ watch(cron, syncCronExpression, {deep: true})
             cronDescription
           }}</b><small>年份独立保存，六段表达式与当前调度引擎兼容</small></div>
       </section>
-      <div class="notice">MQ 实例、Producer Group 和 Topic 统一继承所选报文的默认投递目标，任务中不再重复配置。</div>
+      <div class="notice subtle">MQ 实例、Producer Group 和 Topic 统一继承所选报文的默认投递目标，任务中不再重复配置。</div>
       <template #footer>
-        <button class="button secondary" @click="dialog = ''">取消</button>
+        <button class="button secondary" @click="confirmFormClose() && (dialog = '')">取消</button>
         <button class="button primary" :disabled="dialog === 'edit' ? isPending(`update:tasks:${selected?.id}`) : isPending('create:tasks')" @click="submit">{{ (dialog === 'edit' ? isPending(`update:tasks:${selected?.id}`) : isPending('create:tasks')) ? '正在提交…' : (dialog === 'edit' ? '保存修改' : '创建草稿') }}</button>
       </template>
     </AppModal>
 
-    <AppModal v-if="dialog === 'detail' && selected" title="任务详情" wide @close="dialog = ''">
+    <AppDetailPage v-if="dialog === 'detail' && selected" title="任务详情" @close="dialog = ''; setRoute('tasks')">
+      <p class="notice">自动调度：{{ selected.status === 'ENABLED' ? '已启用' : '未启用' }}。手工执行：{{ manualUnavailable || '可进入预检' }}。停用自动调度不影响历史补跑。</p>
       <div class="unified-detail task-detail">
         <DetailHeader eyebrow="模拟任务" :title="selected.name" :code="selected.id" description="任务继承关联报文的全部投递目标，并按当前调度规则触发执行。">
           <template #aside><StatusBadge :status="selected.status"/><button class="button secondary small" :disabled="isTaskPending(selected)" @click="setTaskEnabled(selected, selected.status !== 'ENABLED')">{{ selected.status === 'ENABLED' ? '停用' : '启用' }}</button></template>
@@ -427,14 +502,20 @@ watch(cron, syncCronExpression, {deep: true})
         <button v-if="canManage" class="button danger detail-danger-action" :disabled="isTaskPending(selected)" @click="openDelete(selected)">删除任务</button>
         <button class="button secondary" :disabled="!latestExecution || isPending(`load-messages:${latestExecution?.id}`)" @click="openMessages">{{ isPending(`load-messages:${latestExecution?.id}`) ? '正在加载…' : '查看最近执行报文' }}</button>
         <button v-if="canManage" class="button secondary" :disabled="isTaskPending(selected)" @click="openEdit(selected)">修改配置</button>
-        <button class="button primary" :disabled="isPending(`run:${selected.id}`)" @click="openRun(selected)"><AppIcon name="play" :size="15" />立即执行</button>
+        <button :class="['button', canManage ? 'secondary' : 'primary']" :disabled="isPending(`run:${selected.id}`)" @click="openHistorical(selected)">历史补跑</button>
+        <button v-if="canManage" class="button primary" :disabled="isPending(`run:${selected.id}`)" @click="openRun(selected)"><AppIcon name="play" :size="15" />立即执行</button>
       </template>
-    </AppModal>
+    </AppDetailPage>
 
-    <AppModal v-if="dialog === 'run' && selected" :title="`立即执行 · ${selected.name}`" @close="dialog = 'detail'">
+    <AppModal v-if="dialog === 'run' && selected" :title="`${runForm.mode === 'MANUAL_SPECIFIED' ? '历史补跑' : '立即执行'} · ${selected.name}`" @close="dialog = 'detail'">
+      <p v-if="runError" class="notice negative" role="alert">{{ runError }}</p>
+      <div class="run-summary"><span>报文模板</span><b>{{ selectedTemplate?.name || '未关联' }}</b><span>执行范围</span><b>整个任务 · {{ currentTargets.length }} 个消息云目标</b></div>
+      <p v-if="manualUnavailable" class="notice risk" role="alert">{{ manualUnavailable }}，本次不可执行。{{ canManage ? '请先检查关联模板和消息云组件。' : '请联系管理员检查配置。' }}</p>
+      <details class="run-targets"><summary>查看消息云投递目标</summary><p v-for="target in currentTargets" :key="target.componentId + ':' + target.topic">{{ components.find(item => item.id === target.componentId)?.name || target.componentId }} · Group：{{ target.producerGroup }} · Topic：{{ target.topic }}</p></details>
+      <p class="muted">使用当前报文配置执行，不修改原调度规则。{{ timePreview?.timeZone ? '业务时区：' + timePreview.timeZone : '服务端未提供业务时区，请核对部署配置。' }}</p>
       <section class="manual-run-panel">
-        <div class="run-mode-grid">
-          <label class="run-mode-card" :class="{ active: runForm.mode === 'MANUAL_CURRENT' }">
+        <h3 class="run-step-title">1 · 选择执行时间</h3><div v-if="canManage" class="run-mode-grid">
+          <label v-if="canManage" class="run-mode-card" :class="{ active: runForm.mode === 'MANUAL_CURRENT' }">
             <input v-model="runForm.mode" class="run-mode-input" type="radio" value="MANUAL_CURRENT" @change="timePreview = null; previewRunTime()">
             <i class="run-mode-radio" aria-hidden="true"></i>
             <span class="run-mode-copy"><b>按当前时间执行</b><small>使用当前计划触发时间，并按数据项配置自动对齐业务时间。</small></span>
@@ -455,7 +536,7 @@ watch(cron, syncCronExpression, {deep: true})
             <input v-model="runForm.plannedTriggerTime" type="datetime-local" step="1" @change="timePreview = null">
           </label>
         </section>
-        <div class="preview-heading"><div><h3>本次业务时间预览</h3><p>预览结果与实际执行使用同一套后端规划逻辑。</p></div>
+        <div class="preview-heading"><div><h3>2 · 核对业务时间</h3><p>预览结果与实际执行使用同一套后端规划逻辑。</p></div>
           <button class="button secondary small" :disabled="isPending(`preview-time:${selected.id}`)" @click="previewRunTime">{{ isPending(`preview-time:${selected.id}`) ? '正在计算…' : (timePreview ? '重新计算' : '计算时间') }}</button></div>
         <div v-if="timePreview" class="time-preview-grid">
           <div><span>数据类型</span><b>{{ timePreview.dataType === 'REALTIME' ? '实况' : (timePreview.dataType === 'FORECAST' ? '预报' : '未识别') }}</b></div>
@@ -468,15 +549,15 @@ watch(cron, syncCronExpression, {deep: true})
         <div v-else class="preview-empty">选择执行时间后点击“计算时间”，确认报文最终使用的时间范围。</div>
       </section>
       <template #footer>
-        <button class="button secondary" :disabled="isPending(`run:${selected.id}`)" @click="dialog = 'detail'">取消</button>
-        <button class="button primary" :disabled="isPending(`run:${selected.id}`) || !timePreview || (runForm.mode === 'MANUAL_SPECIFIED' && !runForm.plannedTriggerTime)" :aria-busy="isPending(`run:${selected.id}`)" @click="confirmRun">{{ isPending(`run:${selected.id}`) ? '正在执行…' : '确认执行' }}</button>
+        <span class="run-footer-hint">3 · 确认后将向上述目标发送报文</span><button class="button secondary" :disabled="isPending(`run:${selected.id}`)" @click="dialog = 'detail'">取消</button>
+        <button class="button primary" :disabled="isPending(`run:${selected.id}`) || Boolean(manualUnavailable) || !timePreview || (runForm.mode === 'MANUAL_SPECIFIED' && !runForm.plannedTriggerTime)" :aria-busy="isPending(`run:${selected.id}`)" @click="confirmRun">{{ isPending(`run:${selected.id}`) ? '正在执行…' : (runForm.mode === 'MANUAL_SPECIFIED' ? '确认补跑' : '确认执行') }}</button>
       </template>
     </AppModal>
 
     <AppModal v-if="canManage && dialog === 'delete' && selected" title="删除任务" @close="dialog = ''">
       <div class="delete-confirm"><strong>{{ selected.name }}</strong>
         <p>删除后任务配置无法恢复，系统不会再按照该任务的调度规则执行。</p>
-        <div class="notice">历史 Execution 和执行报文仍会保留，可继续在执行日志中查询。</div>
+        <div class="notice">历史 Execution 和执行报文仍会保留，可继续在执行记录中查询。</div>
       </div>
       <template #footer>
         <button class="button secondary" @click="dialog = ''">取消</button>
@@ -532,6 +613,10 @@ watch(cron, syncCronExpression, {deep: true})
 </template>
 
 <style scoped>
+.run-summary { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; padding: 16px; background: #fafafa; border-radius: 6px; font-size: 14px; }.run-summary span, .run-footer-hint { color: #595959; }.run-targets { margin: 14px 0; font-size: 14px; overflow-wrap: anywhere; }.run-targets summary { cursor: pointer; color: #1677ff; }.run-step-title { font-size: 16px; }.run-footer-hint { font-size: 13px; margin-right: auto; }
+
+.task-batch-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 12px; padding: 12px 20px; border-bottom: 1px solid #f0f0f0; color: #595959; font-size: 14px; }
+
 .task-list-card { padding: 0; overflow: hidden; }
 .task-list-card > .card-heading { margin: 0; padding: 18px 20px; border-bottom: 1px solid #ebeef5; }
 .task-list-card .data-table th:first-child, .task-list-card .data-table td:first-child { padding-left: 20px; }

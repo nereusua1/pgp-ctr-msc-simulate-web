@@ -26,9 +26,10 @@ test('数据项公共属性不再静默取第一条要素', () => {
   assert.match(dataItem, /重新加载/)
 })
 
-test('执行与报文明细在同一抽屉内切换', () => {
-  assert.equal((execution.match(/<AppModal/g) || []).length, 1)
-  assert.match(execution, /detailMessage \? `最终生成报文/)
+test('执行与报文明细在独立详情页内切换', () => {
+  assert.equal((execution.match(/<AppDetailPage/g) || []).length, 1)
+  assert.equal((execution.match(/<AppModal/g) || []).length, 0)
+  assert.match(execution, /detailMessage \? `实际投递报文/)
   assert.match(execution, /返回执行详情/)
 })
 

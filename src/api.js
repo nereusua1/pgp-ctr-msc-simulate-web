@@ -1,4 +1,5 @@
 import {parseSuccessfulResponse} from './api-response.mjs'
+import {createRequestId} from './request-id.mjs'
 
 let unauthorizedHandler = () => {
 }
@@ -29,8 +30,12 @@ export const list = type => request(`/${type}`)
 export const create = (type, body) => request(`/${type}`, {method: 'POST', body: JSON.stringify(body)})
 export const update = (type, id, body) => request(`/${type}/${id}`, {method: 'PUT', body: JSON.stringify(body)})
 export const remove = (type, id) => request(`/${type}/${id}`, {method: 'DELETE'})
-export const runNow = id => request(`/tasks/${id}:run-now`, {method: 'POST'})
+export const runNow = (id, requestId = createRequestId()) => request(`/tasks/${id}:run-now`, {
+    method: 'POST', headers: {'Accept': 'application/json', 'Content-Type': 'application/json', 'Idempotency-Key': requestId}
+})
 export const executeTask = (id, body) => request(`/tasks/${id}:execute`, {method: 'POST', body: JSON.stringify(body)})
+/** 查询一次幂等执行请求的处理中或终态结果。 */
+export const getExecutionRequest = requestId => request(`/executions/requests/${encodeURIComponent(requestId)}`)
 export const previewTaskTime = (id, body) => request(`/tasks/${id}:preview-time`, {method: 'POST', body: JSON.stringify(body)})
 /** 分页读取执行摘要；列表接口不返回完整报文正文。 */
 export const listExecutions = ({page = 1, size = 10, keyword = '', status = 'ALL'} = {}) => request(

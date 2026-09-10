@@ -11,13 +11,30 @@ const appView = await readFile(new URL('../src/App.vue', import.meta.url), 'utf8
 const taskView = await readFile(new URL('../src/views/TaskManagementView.vue', import.meta.url), 'utf8')
 const dataItemView = await readFile(new URL('../src/views/DataItemManagementView.vue', import.meta.url), 'utf8')
 const componentView = await readFile(new URL('../src/views/MessageComponentManagementView.vue', import.meta.url), 'utf8')
+const loginView = await readFile(new URL('../src/views/LoginView.vue', import.meta.url), 'utf8')
 const icon = await readFile(new URL('../src/components/AppIcon.vue', import.meta.url), 'utf8')
+
+test('列表筛选紧凑左对齐，条数选择仅在表格底部分页区', async () => {
+  const execution = await readFile(new URL('../src/views/ExecutionLogView.vue', import.meta.url), 'utf8')
+  for (const view of [taskView, messageView, dataItemView, componentView, execution]) {
+    assert.match(view, /<ListFilters>/)
+    assert.match(view, /<ListPagination /)
+    assert.ok(view.indexOf('<ListPagination ') > view.indexOf('</table>'))
+    assert.doesNotMatch(view.match(/<ListFilters>[\s\S]*?<\/ListFilters>/)?.[0] || '', /pageSize|每页条数/)
+  }
+  const filters = await readFile(new URL('../src/components/ListFilters.vue', import.meta.url), 'utf8')
+  assert.match(filters, /justify-content: flex-start/)
+  assert.match(filters, /height: 38px/)
+  const pagination = await readFile(new URL('../src/components/ListPagination.vue', import.meta.url), 'utf8')
+  assert.match(pagination, /aria-label="每页条数"/)
+  assert.match(pagination, /focus-visible/)
+})
 
 test('数据列表采用可读的正文与辅助字号', () => {
   assert.match(style, /--type-body: 16px;/)
   assert.match(style, /--type-meta: 14px;/)
-  assert.match(style, /body \.page \.data-table th \{[^}]*font-size: 14px;/s)
-  assert.match(style, /body \.page \.data-table td \{[^}]*font-size: var\(--type-body\);/s)
+  assert.match(style, /body \.page \.data-table th \{[^}]*height: 44px;[^}]*font-size: 13px;/s)
+  assert.match(style, /body \.page \.data-table td \{[^}]*height: 56px;[^}]*font-size: 15px;/s)
   assert.match(style, /\.data-table td small \{[^}]*font-size: var\(--type-meta\);/s)
   assert.match(style, /\.data-table code \{[^}]*14px\/1\.6/s)
 })
@@ -31,10 +48,14 @@ test('区块标题、列表主项与正文建立清晰字号层级', () => {
   assert.match(overview, /\.task-health-head, \.task-health-row \{/)
 })
 
-test('运行总览使用与页面一致的浅色状态面板', () => {
+test('运行总览使用带状态线的白色监控面板', () => {
   const runtimeSummary = overview.match(/\.runtime-summary \{([^}]*)\}/s)?.[1] || ''
-  assert.match(runtimeSummary, /background: linear-gradient\([^;]*#f9fbfe[^;]*#f0f5fc\)/)
-  assert.doesNotMatch(runtimeSummary, /#15223d|#172b4d|#1b3550/)
+  assert.match(runtimeSummary, /border-top: 3px solid #52c41a;/)
+  assert.match(runtimeSummary, /border-radius: 8px;/)
+  assert.match(runtimeSummary, /background: #fff;/)
+  assert.match(overview, /\.runtime-summary\.warning \{ border-top-color: #fa8c16; \}/)
+  assert.match(overview, /\.runtime-metrics > div\.alert::before \{ background: #fa8c16; \}/)
+  assert.doesNotMatch(runtimeSummary, /linear-gradient/)
 })
 
 test('可视化读取真实聚合接口并提供趋势与失败阶段', () => {
@@ -92,7 +113,7 @@ test('所有管理列表统一字号层级并保留高亮蓝色主项', () => {
   assert.match(style, /--type-management-primary: 16px;/)
   assert.match(style, /--type-management-body: 15px;/)
   assert.match(style, /--type-management-technical: 14px;/)
-  assert.match(style, /--management-link: #2d5fcf;/)
+  assert.match(style, /--management-link: #1677ff;/)
   assert.match(style, /\.management-primary \{[^}]*color: var\(--management-link\);/s)
   for (const view of [taskView, dataItemView, messageView, componentView]) {
     assert.match(view, /management-table/)
@@ -103,9 +124,19 @@ test('所有管理列表统一字号层级并保留高亮蓝色主项', () => {
   assert.match(messageView, /\.message-table td \{[^}]*font-size: 15px;/s)
   assert.match(componentView, /\.instance-name \{[^}]*color: var\(--management-link\);[^}]*font-size: 16px;/s)
   assert.match(style, /td\.management-body \{[^}]*font-size: var\(--type-management-body\);/s)
-  assert.match(messageView, /class="management-body" :title="dataItemName\(item\)"/)
+  assert.match(messageView, /class="management-body responsive-low"><TruncatedText :text="dataItemName\(item\)"/)
   assert.match(messageView, /class="management-body target-cell"/)
   assert.equal((dataItemView.match(/class="management-body"/g) || []).length, 2)
+})
+
+test('报文列表展示数据源名称并保留综合搜索', () => {
+  assert.match(messageView, /<th class="responsive-low">数据源名称<\/th>/)
+  assert.match(messageView, /<TruncatedText :text="dataSourceName\(item\)"/)
+  assert.match(messageView, /<span>搜索报文<\/span>/)
+  assert.match(messageView, /aria-label="搜索报文"/)
+  assert.match(messageView, /placeholder="名称、数据源名称或 Topic"/)
+  assert.match(messageView, /\[item\.name, item\.type, item\.description, dataItemName\(item\), dataSourceName\(item\), \.\.\.targetTopicsOf\(item\)\]/)
+  assert.doesNotMatch(messageView, /<th>类型<\/th>/)
 })
 
 test('数据项详情使用扁平业务属性并移除低价值数据库字段', () => {
@@ -140,7 +171,7 @@ test('报文详情区分章节、正文与技术数据的字体角色', () => {
   assert.doesNotMatch(messageView, /class="detail-chip-list"/)
   assert.match(messageView, /\.linked-elements-list \{[^}]*background: #fff;/s)
   assert.doesNotMatch(messageView, /\.linked-elements-list \{[^}]*gap: 1px;[^}]*background: #e8edf4;/s)
-  assert.match(messageView, /<DetailSection title="报文原文"[^>]*collapsible/)
+  assert.match(messageView, /<DetailSection title="模板原文"[^>]*collapsible/)
   assert.match(messageView, /\.message-detail \.detail-path[^}]*font: 600 14px/s)
   assert.match(messageView, /\.message-detail \.code-block \{[^}]*max-height: 320px;/s)
 })
@@ -157,6 +188,141 @@ test('报文配置统一表单字号并支持未保存保护', () => {
   assert.match(messageView, /@keydown="handleTargetTabKey/)
   assert.match(messageView, /role="tablist" aria-label="报文配置步骤"/)
   assert.match(messageView, /:aria-selected="activeTab === tab\[0\]"/)
+  assert.match(messageView, /v-if="selected\.status !== 'PUBLISHED'" class="button primary"/)
+})
+
+test('时间变量绑定明确区分未替换状态并支持全选', () => {
+  assert.match(messageView, /const allTimeFieldsSelected = computed/)
+  assert.match(messageView, /const someTimeFieldsSelected = computed/)
+  assert.match(messageView, /aria-label="全选时间字段替换"/)
+  assert.match(messageView, /:indeterminate="someTimeFieldsSelected && !allTimeFieldsSelected"/)
+  assert.match(messageView, /@change="toggleAllTimeBindings"/)
+  assert.match(messageView, /return binding \? timeStrategyLabel\(binding\) : '不替换'/)
+  assert.match(messageView, /timeStrategiesForPath\(field\.path\)/)
+})
+
+test('默认投递 Topic 支持模糊建议与手动输入', () => {
+  assert.match(messageView, /const topicSuggestions = computed/)
+  assert.match(messageView, /\.filter\(topic => !query \|\| String\(topic\)\.toLowerCase\(\)\.includes\(query\)\)/)
+  assert.match(messageView, /\.slice\(0, 20\)/)
+  assert.match(messageView, /v-model\.trim="activeDeliveryTarget\.topic" role="combobox"/)
+  assert.match(messageView, /aria-autocomplete="list"/)
+  assert.match(messageView, /@keydown="handleTopicKeydown"/)
+  assert.match(messageView, /没有匹配项，可直接使用当前输入/)
+  assert.doesNotMatch(messageView, /<label>Topic<select/)
+})
+
+test('默认投递 Producer Group 同步支持模糊建议与手动输入', () => {
+  assert.match(messageView, /const groupSuggestions = computed/)
+  assert.match(messageView, /\.filter\(group => !query \|\| String\(group\)\.toLowerCase\(\)\.includes\(query\)\)/)
+  assert.match(messageView, /v-model\.trim="activeDeliveryTarget\.producerGroup" role="combobox"/)
+  assert.match(messageView, /placeholder="输入 Group 名称进行模糊搜索"/)
+  assert.match(messageView, /@keydown="handleGroupKeydown"/)
+  assert.doesNotMatch(messageView, /Producer Group<select/)
+})
+
+test('顶栏提供可通过快捷键唤起的全局搜索命令面板', async () => {
+  const component = await readFile(new URL('../src/components/GlobalSearch.vue', import.meta.url), 'utf8')
+  assert.match(appView, /<GlobalSearch/)
+  assert.match(component, /event\.metaKey \|\| event\.ctrlKey/)
+  assert.match(component, /搜索名称、编号、Topic、Group 或异常摘要/)
+  assert.match(component, /最近访问/)
+  assert.match(component, /收藏/)
+  assert.match(component, /快捷动作/)
+  assert.match(component, /statusMeta\(item\.status\)/)
+  assert.match(style, /\.command-panel/)
+})
+
+test('顶栏只展示当前页面名称，不重复展示测试环境', () => {
+  assert.match(appView, /<div class="breadcrumb"><b>\{\{ pageTitle \}\}<\/b><\/div>/)
+  assert.doesNotMatch(appView, /<div class="breadcrumb"><span>测试环境/)
+})
+
+test('登录页不再展示测试环境文案', () => {
+  assert.doesNotMatch(loginView, /测试环境/)
+  assert.match(loginView, /使用系统账号登录/)
+  assert.match(loginView, /企业内部系统/)
+})
+
+test('所有复选框使用统一的 Ant Design 风格状态', () => {
+  assert.match(style, /input\[type='checkbox'\] \{[^}]*border-radius: 3px;[^}]*appearance: none;/s)
+  assert.match(style, /input\[type='checkbox'\]:checked \{[^}]*background: var\(--blue\);/s)
+  assert.match(style, /input\[type='checkbox'\]:checked::after/)
+  assert.match(style, /input\[type='checkbox'\]:focus-visible/)
+  assert.match(style, /input\[type='checkbox'\]:disabled/)
+  assert.match(taskView, /:indeterminate="batchIds\.length > 0/)
+})
+
+test('报文列表行内提供复制和简单预生成', () => {
+  assert.match(messageView, />预生成<\/button>/)
+  assert.doesNotMatch(messageView, /class="row-more-menu"/)
+  assert.match(messageView, /class="link-button" @click="openFor\(item, 'detail'\)">查看/)
+  assert.match(messageView, /class="link-button" @click="openCopy\(item\)">复制/)
+  assert.doesNotMatch(messageView, /secondary-action/)
+  assert.match(messageView, /复制并配置/)
+  assert.match(messageView, /仅生成，不投递/)
+  assert.match(messageView, /简单预生成不读取实时数据，也不改写源文件/)
+  assert.doesNotMatch(messageView, /openFor\(item, 'preview'\)/)
+  assert.match(messageView, /\.message-table \{ min-width: 960px;/)
+  assert.match(messageView, /\.message-table th:nth-child\(2\) \{ width: 125px; \}/)
+  assert.match(messageView, /\.message-table td\.status-cell \{ overflow: visible; text-overflow: clip; \}/)
+  assert.match(messageView, /\.message-table \.operation-cell \{ text-align: center; \}/)
+  assert.match(messageView, /\.operation-cell \.row-actions \{ justify-content: center;/)
+})
+
+test('十四项交互收口形成可验证的统一规范', async () => {
+  const execution = await readFile(new URL('../src/views/ExecutionLogView.vue', import.meta.url), 'utf8')
+  const truncated = await readFile(new URL('../src/components/TruncatedText.vue', import.meta.url), 'utf8')
+  assert.match(modal, /centered/)
+  assert.match(style, /\.modal-backdrop\.centered/)
+  assert.match(style, /\.table-scroll\.is-loading::before/)
+  assert.match(style, /\.data-table \.responsive-low/)
+  assert.match(style, /\.data-table th:last-child, \.data-table td:last-child[^}]*position: sticky/s)
+  assert.match(style, /\.notice\.subtle/)
+  assert.match(style, /\.notice\.risk/)
+  assert.match(truncated, /role="tooltip"/)
+  assert.match(truncated, /clipboard\.writeText/)
+  assert.match(messageView, /editor-status-strip/)
+  assert.match(messageView, /tabIssueCount/)
+  assert.match(messageView, /changedSections/)
+  assert.match(messageView, /replacedPaths/)
+  assert.match(messageView, /预生成结果 · 未投递/)
+  assert.match(messageView, /模板原文 · 当前编辑内容/)
+  assert.match(execution, /实际投递报文/)
+  assert.match(execution, /clearExecutionFilters/)
+})
+
+test('执行记录表格保持单行扫描节奏并结构化展示 MQ 路由', async () => {
+  const execution = await readFile(new URL('../src/views/ExecutionLogView.vue', import.meta.url), 'utf8')
+  assert.match(execution, /<colgroup><col class="batch-col">/)
+  assert.match(execution, /function deliveryRoutes\(target\)/)
+  assert.match(execution, /class="delivery-route"/)
+  assert.match(execution, /class="route-line"><span>实例<\/span>/)
+  assert.match(execution, /class="route-line"><span>Group<\/span>/)
+  assert.match(execution, /class="route-line"><span>Topic<\/span>/)
+  assert.match(execution, /class="route-instance"/)
+  assert.match(execution, /class="route-topic"/)
+  assert.match(execution, /\.route-line \{ display: grid; grid-template-columns: 52px minmax\(0, 1fr\);/)
+  assert.match(execution, /\.execution-table \{ width: 100%; min-width: 1060px; table-layout: fixed; \}/)
+  assert.match(execution, /\.action-column, \.action-cell \{ text-align: center !important; \}/)
+  assert.match(execution, /\.resource-cell b, \.resource-cell small[^}]*white-space: nowrap;/s)
+})
+
+test('工程控制台遵循 Ant Design Pro、Grafana 与 Apifox 视觉基线', () => {
+  assert.match(style, /--bg: #f5f5f5;/)
+  assert.match(style, /--blue: #1677ff;/)
+  assert.match(style, /--radius-sm: 6px;/)
+  assert.match(style, /--radius-lg: 8px;/)
+  assert.match(style, /\.sidebar \{[^}]*background: #181b1f;/s)
+  assert.match(style, /\.nav-item\.active::before \{[^}]*background: var\(--blue\);/s)
+  assert.match(style, /\.topbar \{[^}]*background: #fff;/s)
+  assert.match(style, /\.card \{[^}]*border-top: 3px solid var\(--card-accent, var\(--blue\)\);[^}]*border-radius: 8px;[^}]*background: var\(--surface\);/s)
+  assert.match(style, /\.card\.attention-card \{ --card-accent: var\(--amber\); \}/)
+  assert.match(overview, /class="card attention-card"/)
+  assert.match(style, /\.button \{[^}]*border-radius: 6px;/s)
+  assert.match(style, /\.status-badge \{[^}]*border-radius: 4px;/s)
+  assert.match(style, /\.modal-body \{[^}]*background: #f5f5f5;/s)
+  assert.match(style, /\.modal-footer \{[^}]*position: sticky;[^}]*background: #fff;/s)
 })
 
 test('总览趋势图强化坐标刻度并提供键盘可操作周期切换', () => {
@@ -167,7 +333,7 @@ test('总览趋势图强化坐标刻度并提供键盘可操作周期切换', ()
   assert.match(overview, /:aria-pressed="analyticsRange === '24h'"/)
 })
 
-test('失败投递指标可进入失败执行日志', () => {
+test('失败投递指标可进入失败执行记录', () => {
   assert.match(overview, /function openFailedDeliveries\(\)/)
   assert.match(overview, /emit\('filter-logs', \{ keyword: '', status: 'FAILED' \}\)/)
   assert.match(overview, /class="\{ alert: hasFailure, 'metric-action': hasFailure \}" role="button"/)
