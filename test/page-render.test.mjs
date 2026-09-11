@@ -18,7 +18,7 @@ test('真实页面组件可渲染两种角色与直接详情地址', async () =>
   const server = await createServer({server: {middlewareMode: true, hmr: false, ws: false}, appType: 'custom'})
   try {
     const task = {id:'t1', name:'气象补跑任务', messageId:'m1', status:'DISABLED'}
-    const template = {id:'m1', name:'气象模板', type:'JSON', status:'DRAFT', content:'{}'}
+    const template = {id:'m1', name:'气象模板', type:'JSON', businessType:'REALTIME', timeGenerationMode:'DATA_POLICY', status:'DRAFT', content:'{}'}
     const {default: Task} = await server.ssrLoadModule('/src/views/TaskManagementView.vue')
     const props = {tasks:[task], templates:[template], routeId:'t1', selectedTaskId:'t1'}
     const operator = await renderToString(createSSRApp(Task, props))

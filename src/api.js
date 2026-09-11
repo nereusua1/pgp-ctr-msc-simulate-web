@@ -47,8 +47,8 @@ export const getExecutionAnalytics = (range = '24h') => request(`/executions/ana
 /** 单个任务的累计执行统计和最近五次执行，不受执行日志当前页影响。 */
 export const getTaskExecutionOverview = taskId => request(`/tasks/${encodeURIComponent(taskId)}/execution-overview`)
 export const checkMessageComponent = (id, topic = '') => request(`/message-components/${id}/connection-check${topic ? `?topic=${encodeURIComponent(topic)}` : ''}`)
-export const probeFile = fileName => request(`/file-references/probe?fileName=${encodeURIComponent(fileName)}`)
-export const inspectFile = (fileName, delimiter = ',') => request(`/file-references/inspect?fileName=${encodeURIComponent(fileName)}&delimiter=${encodeURIComponent(delimiter)}`)
+export const probeFile = (filePath, storageType = 'OSS') => request(`/file-references/probe?filePath=${encodeURIComponent(filePath)}&storageType=${encodeURIComponent(storageType)}`)
+export const inspectFile = (filePath, delimiter = ',', storageType = 'OSS') => request(`/file-references/inspect?filePath=${encodeURIComponent(filePath)}&delimiter=${encodeURIComponent(delimiter)}&storageType=${encodeURIComponent(storageType)}`)
 export const getDataItem = groupId => request(`/data-items/${encodeURIComponent(groupId)}`)
 export const searchDataSourceOptions = (keyword = '', limit = 20) => request(`/data-items/source-options?keyword=${encodeURIComponent(keyword)}&limit=${limit}`)
 export const searchDataItemOptions = (sourceCode, keyword = '', limit = 20) => request(`/data-items/options?sourceCode=${encodeURIComponent(sourceCode)}&keyword=${encodeURIComponent(keyword)}&limit=${limit}`)

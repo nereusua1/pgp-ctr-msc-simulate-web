@@ -7,8 +7,9 @@ const labels = {
   ENABLED: '已启用', DISABLED: '已停用', PUBLISHED: '已发布', DRAFT: '草稿', PAUSED: '已暂停'
 }
 const tone = computed(() => {
-  if (['RUNNING', 'SUCCESS', 'ENABLED', 'PUBLISHED'].includes(props.status)) return 'positive'
-  if (['QUEUED', 'PARTIAL_SUCCESS'].includes(props.status)) return 'warning'
+  if (props.status === 'RUNNING') return 'info'
+  if (['SUCCESS', 'ENABLED', 'PUBLISHED'].includes(props.status)) return 'positive'
+  if (['QUEUED', 'PARTIAL_SUCCESS', 'PAUSED'].includes(props.status)) return 'warning'
   if (props.status === 'FAILED') return 'negative'
   return 'neutral'
 })

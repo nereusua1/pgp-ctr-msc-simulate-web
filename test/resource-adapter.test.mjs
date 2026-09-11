@@ -15,7 +15,10 @@ test('保存请求不得回写执行统计和只读传输字段', () => {
 })
 
 test('历史 FILE_REFERENCE 应统一为 FILE', () => {
-  assert.equal(normalizeTemplate({ id: '1', data: { type: 'FILE_REFERENCE' } }).type, 'FILE')
+  const template = normalizeTemplate({ id: '1', data: { type: 'FILE_REFERENCE' } })
+  assert.equal(template.type, 'FILE')
+  assert.equal(template.businessType, 'UNKNOWN')
+  assert.equal(template.timeGenerationMode, 'DATA_POLICY')
 })
 
 test('数据项和执行报文应转换为稳定的页面标识', () => {

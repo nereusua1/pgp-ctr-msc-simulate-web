@@ -16,9 +16,10 @@ const template = {
 }
 
 test('JSON 预生成替换系统值、时间规则和常量但不执行投递', () => {
-  const result = preGenerateMessage(template, '2026-09-08T14:00:00')
+  const result = preGenerateMessage(template, '2026-09-08T14:00:00', new Date('2026-09-08T14:00:01'), () => '550e8400-e29b-41d4-a716-446655440000')
   const content = JSON.parse(result.content)
-  assert.equal(content.metadata.messageId, 'PREVIEW-20260908140000')
+  assert.equal(content.metadata.messageId, '550e8400-e29b-41d4-a716-446655440000')
+  assert.equal(result.messageId, content.metadata.messageId)
   assert.equal(content.startTime, '2026-09-08 14:00:00')
   assert.equal(content.endTime, '2026-09-11 14:00:00')
   assert.equal(content.level, 2)

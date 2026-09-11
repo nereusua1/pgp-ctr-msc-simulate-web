@@ -30,10 +30,10 @@ test('列表筛选紧凑左对齐，条数选择仅在表格底部分页区', as
   assert.match(pagination, /focus-visible/)
 })
 
-test('数据列表采用可读的正文与辅助字号', () => {
+test('数据列表采用可读字号和吸顶表头', () => {
   assert.match(style, /--type-body: 16px;/)
   assert.match(style, /--type-meta: 14px;/)
-  assert.match(style, /body \.page \.data-table th \{[^}]*height: 44px;[^}]*font-size: 13px;/s)
+  assert.match(style, /body \.page \.data-table th \{[^}]*position: sticky;[^}]*height: 44px;[^}]*font-size: 13px;/s)
   assert.match(style, /body \.page \.data-table td \{[^}]*height: 56px;[^}]*font-size: 15px;/s)
   assert.match(style, /\.data-table td small \{[^}]*font-size: var\(--type-meta\);/s)
   assert.match(style, /\.data-table code \{[^}]*14px\/1\.6/s)
@@ -100,7 +100,7 @@ test('执行趋势图提供清晰的双轴与时间刻度', () => {
 
 test('顶栏和任务列表使用协调且清晰的字体层级', () => {
   assert.match(style, /\.breadcrumb \{[^}]*font-size: 14px;[^}]*font-weight: 500;/s)
-  assert.match(style, /\.service-tag \{[^}]*font-size: 13px;[^}]*font-weight: 650;/s)
+  assert.match(style, /\.service-tag \{[^}]*font-size: 12px;[^}]*font-weight: 650;/s)
   assert.match(appView, /\.account-name \{[^}]*font-size: 14px;[^}]*font-weight: 650;/s)
   assert.match(appView, /\.logout-button \{[^}]*font-size: 13px;/s)
   assert.match(taskView, /class="[^"]*task-name-button[^"]*"/)
@@ -242,6 +242,13 @@ test('登录页不再展示测试环境文案', () => {
   assert.doesNotMatch(loginView, /测试环境/)
   assert.match(loginView, /使用系统账号登录/)
   assert.match(loginView, /企业内部系统/)
+  assert.match(loginView, /class="message-rail"/)
+  assert.match(loginView, /class="stage-title"/)
+  assert.match(loginView, /报文构造/)
+  assert.match(loginView, /链路验证/)
+  assert.match(loginView, /定义模板<\/b><small>配置报文结构/)
+  assert.match(loginView, /class="password-toggle"/)
+  assert.match(loginView, /new FormData\(event\.currentTarget\)/)
 })
 
 test('所有复选框使用统一的 Ant Design 风格状态', () => {
@@ -313,16 +320,20 @@ test('工程控制台遵循 Ant Design Pro、Grafana 与 Apifox 视觉基线', (
   assert.match(style, /--blue: #1677ff;/)
   assert.match(style, /--radius-sm: 6px;/)
   assert.match(style, /--radius-lg: 8px;/)
-  assert.match(style, /\.sidebar \{[^}]*background: #181b1f;/s)
-  assert.match(style, /\.nav-item\.active::before \{[^}]*background: var\(--blue\);/s)
-  assert.match(style, /\.topbar \{[^}]*background: #fff;/s)
-  assert.match(style, /\.card \{[^}]*border-top: 3px solid var\(--card-accent, var\(--blue\)\);[^}]*border-radius: 8px;[^}]*background: var\(--surface\);/s)
-  assert.match(style, /\.card\.attention-card \{ --card-accent: var\(--amber\); \}/)
+  assert.match(style, /font-family: Inter/)
+  assert.match(style, /\.sidebar \{[^}]*background: #001529;/s)
+  assert.match(style, /\.nav-item\.active \{[^}]*background: #1677ff;/s)
+  assert.match(style, /\.nav-item\.active::before \{[^}]*background: #69b1ff;/s)
+  assert.match(style, /\.topbar \{[^}]*position: sticky;[^}]*background: #fff;/s)
+  assert.match(style, /\.card \{[^}]*border: 1px solid var\(--line\);[^}]*border-radius: 8px;[^}]*background: var\(--surface\);/s)
+  assert.match(style, /\.card\.attention-card \{ border-top: 3px solid var\(--amber\); \}/)
   assert.match(overview, /class="card attention-card"/)
   assert.match(style, /\.button \{[^}]*border-radius: 6px;/s)
   assert.match(style, /\.status-badge \{[^}]*border-radius: 4px;/s)
   assert.match(style, /\.modal-body \{[^}]*background: #f5f5f5;/s)
   assert.match(style, /\.modal-footer \{[^}]*position: sticky;[^}]*background: #fff;/s)
+  assert.match(appView, /:aria-current="activePage === item\.key \? 'page' : undefined"/)
+  assert.match(loginView, /background: linear-gradient\(145deg, #001529/)
 })
 
 test('总览趋势图强化坐标刻度并提供键盘可操作周期切换', () => {
@@ -349,4 +360,13 @@ test('状态反馈与线性图标语义完整', () => {
   assert.doesNotMatch(taskView, /[＋▶←]/)
   assert.doesNotMatch(messageView, /[＋▶←]/)
   assert.doesNotMatch(componentView, /[＋▶←]/)
+})
+
+test('报文编辑器采用桌面工作台布局且保留变量绑定交互', () => {
+  assert.match(messageView, /class="editor-workbench"/)
+  assert.match(messageView, /class="editor-step-aside"/)
+  assert.match(messageView, /class="editor-inspector"/)
+  assert.match(messageView, /草稿允许暂存未完成配置/)
+  assert.match(messageView, /当前已发布版本继续生效/)
+  assert.match(messageView, /aria-label="全选时间字段替换"/)
 })

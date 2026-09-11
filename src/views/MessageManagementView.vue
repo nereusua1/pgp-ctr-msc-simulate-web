@@ -16,7 +16,9 @@ import DetailSection from '../components/DetailSection.vue'
 import TruncatedText from '../components/TruncatedText.vue'
 import * as api from '../api'
 import {copyMessageDraft, localDateTimeValue, preGenerateMessage} from '../message-pre-generation.mjs'
+import {createFileGeneration, normalizeStorageType} from '../file-storage.mjs'
 import {normalizeTimeBinding, recommendedTimeStrategy, TIME_STRATEGIES, timeStrategiesForPath} from '../time-binding.mjs'
+import {createRequestId} from '../request-id.mjs'
 
 const props = defineProps({ templates: Array, sources: Array, components: Array, tasks: Array, routeId: {type: String, default: ''}, pendingActions: { type: Object, default: () => new Set() }, canManage: { type: Boolean, default: false } })
 const emit = defineEmits(['update', 'create', 'remove', 'notify', 'check-component', 'editing-state'])
@@ -32,7 +34,7 @@ const topicSuggestionsOpen = ref(false)
 const activeTopicSuggestionIndex = ref(-1)
 const createError = ref('')
 const form = reactive({})
-const createForm = reactive({ name: '', type: 'JSON', description: '' })
+const createForm = reactive({ name: '', type: 'JSON', businessType: 'REALTIME', timeGenerationMode: 'DATA_POLICY', description: '' })
 const copyForm = reactive({ name: '', includeDeliveryTargets: false })
 const copyError = ref('')
 const preGenerateForm = reactive({ plannedTriggerTime: '' })
@@ -57,6 +59,8 @@ const valueProviders = [
   ['PERIOD_END_TIME', '预报结束时间'],
   ['CONSTANT', '固定常量']
 ]
+const businessTypeLabel = value => ({REALTIME: '实况', FORECAST: '预报', UNKNOWN: '待确认'})[value] || '待确认'
+const timeGenerationModeLabel = value => ({TRIGGER_TIME: '直接使用计划触发时间', DATA_POLICY: '按数据项策略对齐'})[value] || '待确认'
 const valueBindingDraft = reactive({ path: '', provider: 'MESSAGE_ID', targetType: 'string', value: '', format: 'yyyy-MM-dd HH:mm:ss' })
 let dataItemTimer
 let sourceTimer
@@ -146,12 +150,14 @@ const configurationTabs = computed(() => [
 ])
 const currentFormSnapshot = () => JSON.stringify(normalizedForm(form.status))
 const isEditorDirty = computed(() => dialog.value === 'create'
-  ? Boolean(createForm.name || createForm.description || createForm.type !== 'JSON')
+  ? Boolean(createForm.name || createForm.description || createForm.type !== 'JSON' || createForm.businessType !== 'REALTIME' || createForm.timeGenerationMode !== 'DATA_POLICY')
   : dialog.value === 'edit' && Boolean(savedFormSnapshot.value) && currentFormSnapshot() !== savedFormSnapshot.value)
 const saveError = ref('')
 const reviewIssues = computed(() => {
   const issues = []
   if (!form.name?.trim()) issues.push({tab: 'basic', message: '填写报文名称'})
+  if (!['REALTIME', 'FORECAST'].includes(form.businessType)) issues.push({tab: 'basic', message: '选择业务类型'})
+  if (!['TRIGGER_TIME', 'DATA_POLICY'].includes(form.timeGenerationMode)) issues.push({tab: 'basic', message: '选择时间生成方式'})
   try { JSON.parse(form.content || '') } catch { issues.push({tab: 'content', message: '修正报文 JSON 格式'}) }
   if (!hasCompleteDataBinding()) issues.push({tab: 'data', message: '完成数据源、数据项和要素关联'})
   if (form.type === 'FILE' && !form.fileGeneration?.timeColumn) issues.push({tab: 'file', message: '配置文件时间字段'})
@@ -159,11 +165,12 @@ const reviewIssues = computed(() => {
   if (!hasCompleteTargets()) issues.push({tab: 'target', message: '为投递目标配置 Group 和 Topic'})
   return issues
 })
+const completedTabCount = computed(() => configurationTabs.value.length - new Set(reviewIssues.value.map(issue => issue.tab)).size)
 const tabIssueCount = tab => reviewIssues.value.filter(issue => issue.tab === tab).length
 const changedSections = computed(() => {
   if (!selected.value || !isEditorDirty.value) return []
   const groups = [
-    ['基本信息', ['name', 'type', 'description', 'encoding']], ['报文内容', ['content']],
+    ['基本信息', ['name', 'type', 'businessType', 'timeGenerationMode', 'description', 'encoding']], ['报文内容', ['content']],
     ['数据关联', ['dataBinding']], ['文件模板', ['fileGeneration']], ['变量绑定', ['bindings']], ['投递目标', ['deliveryTargets']]
   ]
   return groups.filter(([, keys]) => keys.some(key => JSON.stringify(form[key]) !== JSON.stringify(selected.value[key]))).map(([label]) => label)
@@ -190,7 +197,7 @@ watch(activeTargetComponentId, () => {
 watch(activeTab, tab => { if (tab === 'data') initializeDataSelector() })
 watch(() => form.type, type => {
   if (type === 'FILE' && !form.fileGeneration) {
-    form.fileGeneration = { sourceFileName: '', sourceFilePath: '', timeColumn: '预报时间', sourceTimeFormat: 'yyyy-MM-dd_HH:mm:ss', delimiter: ',' }
+    form.fileGeneration = createFileGeneration()
   }
   if (type !== 'FILE' && activeTab.value === 'file') activeTab.value = 'basic'
 })
@@ -216,6 +223,8 @@ function syncForm() {
   if (!selected.value) return
   Object.keys(form).forEach(key => delete form[key])
   Object.assign(form, JSON.parse(JSON.stringify(selected.value)))
+  form.businessType = form.businessType || 'UNKNOWN'
+  form.timeGenerationMode = form.timeGenerationMode || 'DATA_POLICY'
   form.bindings = (form.bindings || []).map(normalizeTimeBinding)
   if (!form.dataBinding) {
     const legacySource = props.sources.find(item => item.id === form.sourceId)
@@ -230,8 +239,9 @@ function syncForm() {
   form.componentId = form.componentIds[0] || ''
   activeTargetComponentId.value = form.deliveryTargets[0]?.componentId || ''
   if (form.type === 'FILE' && !form.fileGeneration) {
-    form.fileGeneration = { sourceFileName: '', sourceFilePath: '', timeColumn: '预报时间', sourceTimeFormat: 'yyyy-MM-dd_HH:mm:ss', delimiter: ',' }
+    form.fileGeneration = createFileGeneration()
   }
+  if (form.type === 'FILE') form.fileGeneration.storageType = normalizeStorageType(form.fileGeneration.storageType)
   if (form.type === 'FILE' && !form.fileGeneration.delimiter) form.fileGeneration.delimiter = ','
   fileInspection.value = null
   Object.assign(valueBindingDraft, { path: '', provider: 'MESSAGE_ID', targetType: 'string', value: '', format: 'yyyy-MM-dd HH:mm:ss' })
@@ -447,7 +457,7 @@ function formatContent() {
   catch { emit('notify', 'JSON 格式不合法', 'error') }
 }
 function openCreate() {
-  Object.assign(createForm, { name: '', type: 'JSON', description: '' })
+  Object.assign(createForm, { name: '', type: 'JSON', businessType: 'REALTIME', timeGenerationMode: 'DATA_POLICY', description: '' })
   createError.value = ''
   dialog.value = 'create'
 }
@@ -648,10 +658,10 @@ function removeValueBinding(id) { form.bindings = (form.bindings || []).filter(b
 function valueProviderLabel(provider) { return valueProviders.find(item => item[0] === provider)?.[1] || provider }
 async function inspectSourceFile() {
   const sourceReference = form.fileGeneration?.sourceFilePath || form.fileGeneration?.sourceFileName || findFirstField(form.content, 'filePath')
-  if (!sourceReference) { emit('notify', '请填写原始文件地址，或先在报文内容中配置 filePath', 'error'); return }
+  if (!sourceReference) { emit('notify', '请填写源文件对象路径，或先在报文内容中配置 filePath', 'error'); return }
   fileInspecting.value = true
   try {
-    fileInspection.value = await api.inspectFile(sourceReference, form.fileGeneration?.delimiter || ',')
+    fileInspection.value = await api.inspectFile(sourceReference, form.fileGeneration?.delimiter || ',', form.fileGeneration?.storageType || 'OSS')
     const first = fileInspection.value.timeColumns?.[0]
     if (first) {
       form.fileGeneration.timeColumn = first.columnName
@@ -677,13 +687,14 @@ function submitCreate() {
   if (!createForm.name.trim()) { createError.value = '请输入报文名称'; return }
   createError.value = ''
   const fileReference = createForm.type === 'FILE'
+  const defaultMessageId = createRequestId()
   const item = {
     ...createForm, name: createForm.name.trim(), description: createForm.description.trim(), status: 'DRAFT', encoding: 'UTF-8', sourceId: '',
     dataBinding: { dataItemCode: '', dataItemName: '', sourceCode: '', sourceName: '', elements: [] },
     deliveryTargets: [],
     componentIds: [], componentId: '', producerGroup: '', topic: '',
-    content: fileReference ? '{\n  "metadata": {\n    "messageId": "示例消息标识"\n  },\n  "records": [{\n    "effectTimePeriod": {\n      "startTime": "2025/06/10 00:00:00",\n      "endTime": "2025/06/13 00:00:00"\n    },\n    "fileName": "SOURCE.csv",\n    "filePath": "http://localhost:8088/files/SOURCE.csv",\n    "fileType": "csv",\n    "planFileSize": "0"\n  }]\n}' : '{\n  "metadata": {\n    "messageId": "示例消息标识"\n  },\n  "records": []\n}',
-    fileGeneration: fileReference ? { sourceFileName: '', sourceFilePath: '', timeColumn: '预报时间', sourceTimeFormat: 'yyyy-MM-dd_HH:mm:ss', delimiter: ',' } : undefined,
+    content: fileReference ? JSON.stringify({metadata: {messageId: defaultMessageId}, records: [{effectTimePeriod: {startTime: '2025/06/10 00:00:00', endTime: '2025/06/13 00:00:00'}, fileName: 'SOURCE.csv', filePath: 'forecast/SOURCE.csv', fileType: 'csv', planFileSize: '0'}]}, null, 2) : JSON.stringify({metadata: {messageId: defaultMessageId}, records: []}, null, 2),
+    fileGeneration: fileReference ? createFileGeneration() : undefined,
     bindings: [{ id: `value-rule-${Date.now()}-0`, kind: 'VALUE_RULE', path: '$.metadata.messageId', provider: 'MESSAGE_ID', targetType: 'string' }]
   }
   emit('create', item, created => { selectedId.value = created.id; syncForm(); activeTab.value = 'data'; dialog.value = 'edit' }, error => { createError.value = error || '保存失败，请重试' })
@@ -723,7 +734,7 @@ function confirmDelete() {
           <template #aside><StatusBadge :status="selected.status"/></template>
         </DetailHeader>
         <DetailGrid :columns="3">
-          <div><dt>报文类型</dt><dd>{{ selected.type }} 报文</dd></div><div><dt>关联数据项</dt><dd>{{ dataItemName(selected) }}</dd></div><div><dt>默认编码</dt><dd>{{ selected.encoding || 'UTF-8' }}</dd></div>
+          <div><dt>报文类型</dt><dd>{{ selected.type }} 报文</dd></div><div><dt>业务类型</dt><dd>{{ businessTypeLabel(selected.businessType) }}</dd></div><div><dt>时间生成方式</dt><dd>{{ timeGenerationModeLabel(selected.timeGenerationMode) }}</dd></div><div><dt>关联数据项</dt><dd>{{ dataItemName(selected) }}</dd></div><div><dt>默认编码</dt><dd>{{ selected.encoding || 'UTF-8' }}</dd></div>
         </DetailGrid>
         <DetailSection title="数据关联" description="报文生成时使用的数据源、数据项与要素项">
           <div class="binding-overview"><div><span>数据源</span><b>{{ selected.dataBinding?.sourceName || '未关联' }}</b><code>{{ selected.dataBinding?.sourceCode || '—' }}</code></div><div><span>数据项</span><b>{{ selected.dataBinding?.dataItemName || '未关联' }}</b><code>{{ selected.dataBinding?.dataItemCode || '—' }}</code></div></div>
@@ -740,7 +751,7 @@ function confirmDelete() {
           <div class="table-scroll"><table class="data-table"><thead><tr><th>报文字段路径</th><th>值来源</th><th>目标类型</th></tr></thead><tbody><tr v-for="binding in (selected.bindings || []).filter(item => item.kind === 'VALUE_RULE')" :key="binding.id"><td><code class="detail-path">{{ binding.path }}</code></td><td>{{ valueProviderLabel(binding.provider) }}</td><td><code class="detail-format">{{ binding.targetType || 'string' }}</code></td></tr></tbody></table></div>
         </DetailSection>
         <DetailSection v-if="selected.type === 'FILE'" title="文件生成配置" description="执行时改写源文件并生成带 SIM 标识的新文件">
-          <DetailGrid :columns="3"><div><dt>原始文件</dt><dd>{{ selected.fileGeneration?.sourceFilePath || selected.fileGeneration?.sourceFileName || '读取报文 filePath' }}</dd></div><div><dt>时间字段</dt><dd>{{ selected.fileGeneration?.timeColumn || '预报时间' }}</dd></div><div><dt>时间格式</dt><dd><code class="detail-format">{{ selected.fileGeneration?.sourceTimeFormat || 'yyyy-MM-dd_HH:mm:ss' }}</code></dd></div></DetailGrid>
+          <DetailGrid :columns="4"><div><dt>对象存储</dt><dd>{{ normalizeStorageType(selected.fileGeneration?.storageType) }}</dd></div><div><dt>原始文件</dt><dd>{{ selected.fileGeneration?.sourceFilePath || selected.fileGeneration?.sourceFileName || '读取报文 filePath' }}</dd></div><div><dt>时间字段</dt><dd>{{ selected.fileGeneration?.timeColumn || '预报时间' }}</dd></div><div><dt>时间格式</dt><dd><code class="detail-format">{{ selected.fileGeneration?.sourceTimeFormat || 'yyyy-MM-dd_HH:mm:ss' }}</code></dd></div></DetailGrid>
         </DetailSection>
         <DetailSection title="默认投递目标" description="一次任务执行会分别向以下目标投递" :count="deliveryTargetsOf(selected).length">
           <div v-if="deliveryTargetsOf(selected).length" class="table-scroll"><table class="data-table"><thead><tr><th>MQ 实例</th><th>Producer Group</th><th>Topic</th></tr></thead><tbody><tr v-for="target in deliveryTargetsOf(selected)" :key="target.componentId"><td><b>{{ componentOf(target.componentId)?.name || target.componentId }}</b></td><td>{{ target.producerGroup || '未配置' }}</td><td>{{ target.topic || '未配置' }}</td></tr></tbody></table></div><div v-else class="inline-empty">尚未配置投递目标</div>
@@ -753,14 +764,19 @@ function confirmDelete() {
     </AppModal>
 
     <AppDetailPage v-if="canManage && dialog === 'edit' && selected" :title="`配置报文 · ${selected.name}`" :before-close="confirmEditorClose" @close="dialog = ''">
-      <section class="editor-status-strip"><div><StatusBadge :status="form.status || 'DRAFT'"/><span v-if="isEditorDirty" class="unsaved-indicator" role="status">未保存</span><span>关联 {{ referenceTasks.length }} 个任务 · {{ referenceTasks.filter(item => item.status === 'ENABLED').length }} 个已启用</span></div><button v-if="reviewIssues.length" class="issue-summary" @click="locateIssue(reviewIssues[0])">待完善 {{ reviewIssues.length }} 项 →</button><span v-else class="ready-summary">配置检查通过</span></section>
+      <section class="editor-status-strip"><div><StatusBadge :status="form.status || 'DRAFT'"/><span v-if="isEditorDirty" class="unsaved-indicator" role="status">未保存</span><span>关联 {{ referenceTasks.length }} 个任务 · {{ referenceTasks.filter(item => item.status === 'ENABLED').length }} 个已启用</span></div><button v-if="reviewIssues.length" class="issue-summary" @click="locateIssue(reviewIssues[0])">待完善 {{ reviewIssues.length }} 项 →</button><span v-else class="ready-summary">页面完整性检查通过</span></section>
       <p v-if="saveError" class="notice pre-generate-error" role="alert">{{ saveError }}</p>
       <template #header-actions><button v-if="selected.status !== 'PUBLISHED'" class="button primary" :disabled="isPending(`update:messages:${selected.id}`)" @click="publish">{{ isPending(`update:messages:${selected.id}`) ? '正在发布…' : '发布报文' }}</button></template>
       <div class="message-context"><div><b>{{ selected.name }}</b><small>{{ selected.type }} · {{ selected.description }}</small></div></div>
-      <div v-if="selected.status === 'PUBLISHED' && isEditorDirty" class="published-edit-notice"><b>正在修改已发布报文</b><span>保存后将转为草稿，关联任务可能受到影响。</span></div>
-      <div class="config-step-navigation"><span class="config-step-label">配置步骤</span></div>
-      <nav class="tabs" role="tablist" aria-label="报文配置步骤"><button v-for="tab in configurationTabs" :key="tab[0]" type="button" role="tab" :data-config-tab="tab[0]" :aria-controls="`config-panel-${tab[0]}`" :aria-selected="activeTab === tab[0]" :tabindex="activeTab === tab[0] ? 0 : -1" :class="{ active: activeTab === tab[0] }" @click="selectConfigurationTab(tab[0])" @keydown="handleConfigurationTabKey($event, tab[0])">{{ tab[1] }}<small v-if="tabIssueCount(tab[0])" class="tab-issue-count">{{ tabIssueCount(tab[0]) }}</small></button></nav>
-      <section v-if="activeTab === 'basic'" id="config-panel-basic" class="config-panel" role="tabpanel"><div class="card-heading"><div><h2>基本信息</h2><p>每份报文配置固定生成一条 MQ 消息。</p></div></div><div class="form-grid"><label>报文名称<input v-model="form.name"></label><label>报文类型<select v-model="form.type"><option>JSON</option><option>FILE</option></select></label><label>业务描述<input v-model="form.description"></label><label>默认编码<select v-model="form.encoding"><option>UTF-8</option><option>GBK</option></select></label></div></section>
+      <div v-if="selected.status === 'PUBLISHED' && isEditorDirty" class="published-edit-notice"><b>正在修改已发布报文</b><span>保存后形成待发布修改；当前已发布版本继续生效，重新发布后新配置才用于后续执行。</span></div>
+      <div class="editor-workbench">
+      <aside class="editor-step-aside">
+        <div class="config-step-navigation"><span class="config-step-label">配置步骤</span><small>已完成 {{ completedTabCount }}/{{ configurationTabs.length }}</small></div>
+        <nav class="tabs" role="tablist" aria-label="报文配置步骤"><button v-for="(tab, index) in configurationTabs" :key="tab[0]" type="button" role="tab" :data-config-tab="tab[0]" :aria-controls="`config-panel-${tab[0]}`" :aria-selected="activeTab === tab[0]" :tabindex="activeTab === tab[0] ? 0 : -1" :class="{ active: activeTab === tab[0] }" @click="selectConfigurationTab(tab[0])" @keydown="handleConfigurationTabKey($event, tab[0])"><i>{{ index + 1 }}</i><span>{{ tab[1] }}</span><small v-if="tabIssueCount(tab[0])" class="tab-issue-count">{{ tabIssueCount(tab[0]) }}</small></button></nav>
+        <p class="editor-step-help">草稿允许暂存未完成配置，发布前需完成全部检查。</p>
+      </aside>
+      <div class="editor-main">
+      <section v-if="activeTab === 'basic'" id="config-panel-basic" class="config-panel" role="tabpanel"><div class="card-heading"><div><h2>基本信息</h2><p>业务类型由报文本身定义，不再从数据项 is_rt 推断。</p></div></div><div class="form-grid"><label>报文名称<input v-model="form.name"></label><label>报文类型<select v-model="form.type"><option>JSON</option><option>FILE</option></select></label><label>业务类型<select v-model="form.businessType"><option value="UNKNOWN" disabled>请选择</option><option value="REALTIME">实况</option><option value="FORECAST">预报</option></select><small>按报文实际业务语义选择，与数据项配置解耦。</small></label><label>时间生成方式<select v-model="form.timeGenerationMode"><option value="TRIGGER_TIME">直接使用计划触发时间</option><option value="DATA_POLICY">按数据项策略对齐</option></select><small>{{ form.timeGenerationMode === 'TRIGGER_TIME' ? '业务基准时间与计划触发时间相同。' : '业务基准时间按起报点或数据间隔对齐。' }}</small></label><label>业务描述<input v-model="form.description"></label><label>默认编码<select v-model="form.encoding"><option>UTF-8</option><option>GBK</option></select></label></div></section>
       <section v-else-if="activeTab === 'content'" id="config-panel-content" class="config-panel" role="tabpanel"><div class="card-heading"><div><h2>报文内容</h2><p>使用 JSON 结构与变量占位符定义最终报文。</p></div><button class="button secondary" @click="formatContent">格式化 / 校验</button></div><textarea v-model="form.content" class="code-editor" spellcheck="false"></textarea><div class="button-row"><button class="button secondary" @click="editorPreview = true">查看原文</button></div></section>
       <section v-else-if="activeTab === 'data'" id="config-panel-data" class="config-panel" role="tabpanel"><div class="card-heading"><div><h2>数据关联</h2><p>依次选择数据源、该数据源提供的数据项，以及参与报文生成的要素项。</p></div></div><div class="data-linkage-grid">
         <section class="linkage-step"><h3><span>1</span>选择数据源</h3><p>按来源编码或中文名称远程搜索，最多返回 20 条。</p><label class="catalog-search">搜索数据源<input v-model="sourceKeyword" placeholder="输入来源编码或中文名称"></label><div class="catalog-options"><button v-for="item in sourceOptions" :key="item.code" type="button" :class="{ selected: form.dataBinding?.sourceCode === item.code }" @click="chooseDataSource(item)"><code>{{ item.code }}</code><b>{{ item.name || '未配置中文名称' }}</b><small>{{ item.dataItemCount }} 个数据项</small></button><div v-if="catalogLoading.sources" class="catalog-empty">正在搜索…</div><div v-else-if="!sourceOptions.length" class="catalog-empty">没有匹配的数据源</div></div></section>
@@ -768,20 +784,21 @@ function confirmDelete() {
         <section class="linkage-step element-step" :class="{ disabled: !form.dataBinding?.sourceCode }"><h3><span>3</span>选择要素项</h3><p>支持搜索、多选及全选当前结果。</p><label class="catalog-search">搜索要素项<input v-model="elementKeyword" :disabled="!form.dataBinding?.sourceCode" placeholder="要素编码或中文名称"></label><button class="select-all" type="button" :disabled="!elementOptions.length" @click="toggleAllElements">全选/取消当前结果 · 已选 {{ form.dataBinding?.elements?.length || 0 }} 项</button><div class="element-options"><label v-for="item in elementOptions" :key="item.id" :class="{ selected: isElementSelected(item) }"><input type="checkbox" :checked="isElementSelected(item)" @change="toggleElement(item)"><span><b>{{ item.code }} · {{ item.name || '未配置中文名称' }}</b><small>{{ item.unit || '无单位' }} · {{ item.dataFormat || '未配置格式' }}</small></span></label><div v-if="catalogLoading.elements" class="catalog-empty">正在加载…</div><div v-else-if="form.dataBinding?.sourceCode && !elementOptions.length" class="catalog-empty">没有匹配的要素项</div></div></section>
       </div><div class="binding-summary"><div><b>{{ form.dataBinding?.sourceCode || '未选择数据源' }} / {{ form.dataBinding?.dataItemCode || '未选择数据项' }}</b><small>{{ form.dataBinding?.sourceName || '—' }} · {{ form.dataBinding?.dataItemName || '—' }}</small><div class="selected-element-chips"><span v-for="element in form.dataBinding?.elements" :key="element.id">{{ element.code }} {{ element.name }}</span></div></div><strong>已选 {{ form.dataBinding?.elements?.length || 0 }} 个要素</strong></div></section>
       <section v-else-if="activeTab === 'file'" id="config-panel-file" class="config-panel file-template-panel" role="tabpanel">
-        <div class="card-heading"><div><h2>文件模板</h2><p>源文件由管理人员预先上传到文件服务；执行时按数据项时间间隔生成新文件，不覆盖源文件。</p></div><button class="button secondary" :disabled="fileInspecting" @click="inspectSourceFile">{{ fileInspecting ? '正在扫描…' : '扫描日期字段' }}</button></div>
+        <div class="card-heading"><div><h2>文件模板</h2><p>源文件由管理人员预先上传到对象存储；执行时按数据项时间间隔生成新文件，不覆盖源文件。</p></div><button class="button secondary" :disabled="fileInspecting" @click="inspectSourceFile">{{ fileInspecting ? '正在扫描…' : '扫描日期字段' }}</button></div>
         <div class="file-generation-flow"><span>读取人工源文件</span><b>→</b><span>按计划触发时间改写</span><b>→</b><span>发布带 SIM 标识的新文件</span><b>→</b><span>回填外层报文</span></div>
         <div class="form-grid">
-          <label>原始文件地址（可选）<input v-model.trim="form.fileGeneration.sourceFilePath" placeholder="留空时读取外层报文中的 filePath"><small>完整 URL 必须属于 Nginx 受控根地址，也可填写共享目录相对路径。</small></label>
+          <label>对象存储<select v-model="form.fileGeneration.storageType" @change="fileInspection = null"><option value="OSS">阿里云 OSS</option><option value="OBS">华为云 OBS</option></select><small>访问凭证、Endpoint 与 Bucket 由后端 Nacos 配置统一管理。</small></label>
+          <label>源文件对象路径（可选）<input v-model.trim="form.fileGeneration.sourceFilePath" placeholder="例如 forecast/source.csv"><small>可填写对象 Key 或对象完整 URL；留空时读取外层报文中的 filePath。</small></label>
           <label>原始文件名（可选）<input v-model.trim="form.fileGeneration.sourceFileName" placeholder="例如 POLLUTION_SHORT_20250610.csv"><small>用于覆盖外层报文 fileName；未填写时自动从地址提取。</small></label>
           <label>文件时间字段<input v-model.trim="form.fileGeneration.timeColumn" placeholder="例如 预报时间"><small>按表头精确匹配；同一时间的多条记录会保持一致。</small></label>
           <label>原始时间格式<select v-model="form.fileGeneration.sourceTimeFormat"><option>yyyy-MM-dd_HH:mm:ss</option><option>yyyy-MM-dd HH:mm:ss</option><option>yyyy/MM/dd HH:mm:ss</option></select><small>样例 CSV 使用下划线格式。</small></label>
           <label>字段分隔符<select v-model="form.fileGeneration.delimiter"><option value=",">逗号（CSV）</option><option value="TAB">制表符（TXT）</option><option value="|">竖线（TXT）</option><option value=";">分号</option></select><small>文件扩展名不决定解析方式，CSV/TXT 均按此配置读取。</small></label>
         </div>
         <div v-if="fileInspection" class="file-inspection-result"><div><span>已扫描</span><b>{{ fileInspection.scannedRows }} 行样本</b></div><button v-for="column in fileInspection.timeColumns" :key="column.columnName" type="button" :class="{ selected: form.fileGeneration.timeColumn === column.columnName }" @click="form.fileGeneration.timeColumn = column.columnName; form.fileGeneration.sourceTimeFormat = column.format"><span>{{ column.columnName }}</span><b>{{ column.sample }}</b><small>{{ column.format }}</small></button><p v-if="!fileInspection.timeColumns?.length">未发现支持的日期字段。</p></div>
-        <div class="notice"><b>时间规则：</b>文件第一个时间槽使用后端对齐后的业务基准时间，后续时间槽按所选数据项和数据源配置的时间间隔 递增。源文件不存在时记录后端告警日志并终止本次发送。</div>
+        <div class="notice"><b>时间规则：</b>文件第一个时间槽使用后端对齐后的业务基准时间，后续时间槽按所选数据项和数据源配置的时间间隔递增。后端从所选 OSS/OBS 下载源文件并将生成文件上传到同一对象目录；对象不存在时终止本次发送。</div>
       </section>
       <section v-else-if="activeTab === 'bindings'" id="config-panel-bindings" class="config-panel time-binding-panel" role="tabpanel">
-        <div class="card-heading"><div><h2>时间规则</h2><p>系统自动识别日期字段；任务提供计划触发时间，后端再依据数据项配置计算业务基准时间。</p></div><button class="button secondary" :disabled="!detectedTimeFields.length" @click="bindAllTimeFields">应用推荐规则</button></div>
+        <div class="card-heading"><div><h2>时间规则</h2><p>系统只校验已启用规则实际依赖的时间参数；未勾选字段保持原值。</p></div><button class="button secondary" :disabled="!detectedTimeFields.length" @click="bindAllTimeFields">应用推荐规则</button></div>
         <div class="time-binding-guide"><div><span>调度输入</span><b>计划触发时间</b></div><div><span>业务起点</span><b>实况准点 / 预报起报点</b></div><div><span>数据间隔</span><b>读取 period_interval</b></div><div><span>结束时间</span><b>读取 period</b></div><strong>已配置 {{ configuredTimeBindingCount }} / {{ detectedTimeFields.length }}</strong></div>
         <div v-if="!detectedTimeFields.length" class="notice">未识别到 yyyy-MM-dd HH:mm:ss 或 yyyy/MM/dd HH:mm:ss 日期字段，请先检查报文内容。</div>
         <div v-else class="table-scroll"><table class="data-table time-binding-table"><thead><tr><th class="binding-check"><label class="binding-select-all"><input type="checkbox" :checked="allTimeFieldsSelected" :indeterminate="someTimeFieldsSelected && !allTimeFieldsSelected" aria-label="全选时间字段替换" @change="toggleAllTimeBindings"><span>替换</span></label></th><th>字段</th><th>报文路径</th><th>当前示例值</th><th>生成规则</th></tr></thead><tbody><tr v-for="field in detectedTimeFields" :key="field.path" :class="{ active: timeBindingOf(field.path) }"><td><input type="checkbox" :checked="Boolean(timeBindingOf(field.path))" :aria-label="`绑定 ${field.field}`" @change="toggleTimeBinding(field)"></td><td><b>{{ field.field }}</b><small>{{ field.format }}</small></td><td><code>{{ field.path }}</code></td><td>{{ field.sample }}</td><td><div class="time-strategy-control" :class="{ disabled: !timeBindingOf(field.path) }"><b>{{ timeStrategyLabelForField(field) }}</b><select class="time-strategy-select" :disabled="!timeBindingOf(field.path)" :value="timeBindingOf(field.path)?.strategy || ''" :aria-label="`${field.field} 生成规则`" @change="updateTimeStrategy(field, $event.target.value)"><option v-for="strategy in timeStrategiesForPath(field.path)" :key="strategy[0]" :value="strategy[0]">{{ strategy[1] }}</option></select></div></td></tr></tbody></table></div>
@@ -816,10 +833,18 @@ function confirmDelete() {
         </div>
         <div class="notice"><b>执行规则：</b>一次任务执行会向每个已选 MQ 目标各发送一条报文；每条投递独立记录成功或失败，互不覆盖。</div>
       </section>
+      </div>
+      <aside class="editor-inspector" aria-label="配置检查">
+        <div class="inspector-heading"><span>配置检查</span><b :class="{ ready: !reviewIssues.length }">{{ reviewIssues.length ? `${reviewIssues.length} 项待完善` : '可以发布' }}</b></div>
+        <dl class="inspector-facts"><div><dt>编辑状态</dt><dd>{{ isEditorDirty ? '有未保存修改' : '已保存' }}</dd></div><div><dt>当前版本</dt><dd>{{ form.status === 'PUBLISHED' ? '已发布' : '草稿' }}</dd></div><div><dt>关联任务</dt><dd>{{ referenceTasks.length }} 个</dd></div></dl>
+        <div v-if="reviewIssues.length" class="inspector-issues"><button v-for="issue in reviewIssues" :key="`${issue.tab}-${issue.message}`" type="button" @click="locateIssue(issue)"><span>{{ configurationTabs.find(tab => tab[0] === issue.tab)?.[1] }}</span><b>{{ issue.message }}</b><i>→</i></button></div>
+        <div v-else class="inspector-ready"><b>页面配置完整</b><span>仍请在发布前核对业务内容和投递目标。</span></div>
+      </aside>
+      </div>
       <template #footer><span class="save-hint">{{ changedSections.length ? `已修改：${changedSections.join('、')}` : '当前没有未保存修改' }}</span><button class="button primary" :disabled="(activeTab === 'data' && !hasCompleteDataBinding()) || isPending(`update:messages:${selected.id}`)" @click="saveCurrentTab">{{ isPending(`update:messages:${selected.id}`) ? '正在保存…' : '保存草稿' }}</button></template>
     </AppDetailPage>
 
-    <AppDetailPage v-if="canManage && dialog === 'create'" title="新建报文" :before-close="confirmEditorClose" @close="dialog = ''"><p class="muted">先创建基础草稿，随后通过可搜索的三级选择器关联数据源、数据项和要素项。</p><div class="form-grid"><label>报文名称（必填）<input v-model="createForm.name" autofocus placeholder="例如 weather_station_message" @input="createError = ''"></label><label>报文类型（必填）<select v-model="createForm.type"><option value="JSON">JSON 报文</option><option value="FILE">FILE 报文</option></select></label><label>业务描述<input v-model="createForm.description" placeholder="简要说明报文用途"></label></div><div class="notice">创建后自动进入“数据关联”，草稿完成关联前不能发布。</div><p v-if="createError" class="status-badge negative">{{ createError }}</p><template #footer><button class="button secondary" @click="confirmEditorClose() && (dialog = '')">取消</button><button class="button primary" :disabled="isPending('create:messages')" @click="submitCreate">{{ isPending('create:messages') ? '正在创建…' : '创建并关联数据' }}</button></template></AppDetailPage>
+    <AppDetailPage v-if="canManage && dialog === 'create'" title="新建报文" :before-close="confirmEditorClose" @close="dialog = ''"><p class="muted">先明确报文业务语义和时间基准，再进入数据关联与变量绑定。</p><div class="form-grid"><label>报文名称（必填）<input v-model="createForm.name" autofocus placeholder="例如 weather_station_message" @input="createError = ''"></label><label>报文类型（必填）<select v-model="createForm.type"><option value="JSON">JSON 报文</option><option value="FILE">FILE 报文</option></select></label><label>业务类型（必填）<select v-model="createForm.businessType"><option value="REALTIME">实况</option><option value="FORECAST">预报</option></select></label><label>时间生成方式（必填）<select v-model="createForm.timeGenerationMode"><option value="TRIGGER_TIME">直接使用计划触发时间</option><option value="DATA_POLICY">按数据项策略对齐</option></select></label><label>业务描述<input v-model="createForm.description" placeholder="简要说明报文用途"></label></div><div class="notice">只有实际使用数据间隔、预报结束时间等绑定时，后端才校验对应的数据项时间参数。</div><p v-if="createError" class="status-badge negative">{{ createError }}</p><template #footer><button class="button secondary" @click="confirmEditorClose() && (dialog = '')">取消</button><button class="button primary" :disabled="isPending('create:messages')" @click="submitCreate">{{ isPending('create:messages') ? '正在创建…' : '创建并关联数据' }}</button></template></AppDetailPage>
     <AppModal v-if="canManage && dialog === 'delete' && selected" title="删除报文" @close="dialog = ''"><p>确定删除报文 <b>{{ selected.name }}</b> 吗？删除后无法恢复。</p><div v-if="referenceTasks.length" class="notice"><b>当前不能删除：</b>该报文仍被 {{ referenceTasks.length }} 个任务引用：{{ referenceTasks.map(item => item.name).join('、') }}。</div><div v-else class="notice">该报文没有被任务引用，确认后将删除该配置。</div><template #footer><button class="button secondary" @click="dialog = ''">取消</button><button class="button danger" :disabled="referenceTasks.length || isPending(`remove:messages:${selected.id}`)" @click="confirmDelete">{{ isPending(`remove:messages:${selected.id}`) ? '正在删除…' : '确认删除' }}</button></template></AppModal>
     <AppModal v-if="canManage && dialog === 'copy' && selected" title="复制报文" @close="dialog = ''">
       <div class="copy-source-summary"><span>来源报文</span><b>{{ selected.name }}</b><small>{{ selected.type }} · {{ selected.status === 'PUBLISHED' ? '已发布' : '草稿' }}</small></div>
@@ -920,10 +945,39 @@ body .page .message-detail .data-table td { padding: 15px 14px; color: #4d5f77; 
 body .page .message-detail .detail-path { color: #2c486d; font: 600 14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
 body .page .message-detail .detail-format { color: #5c6d84; font: 500 14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
 .message-context { display: flex; align-items: flex-start; justify-content: space-between; padding: 0 0 14px; }.message-context b { font-size: 17px; }.message-context small { display: block; margin-top: 4px; color: var(--muted); font-size: var(--type-form-label); }
-.config-step-navigation { display: flex; align-items: center; justify-content: space-between; margin-top: 2px; }
+.editor-workbench { display: grid; grid-template-columns: 188px minmax(0, 1fr) 248px; align-items: start; gap: 14px; }
+.editor-step-aside, .editor-inspector { position: sticky; top: 12px; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+.config-step-navigation { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 13px 14px; border-bottom: 1px solid var(--line); background: #fafbfd; }
 .config-step-label { color: #526078; font-size: var(--type-form-label); font-weight: 700; }
+.config-step-navigation small { color: var(--muted); font-size: 11px; }
 .unsaved-indicator { display: inline-flex; align-items: center; gap: 6px; color: var(--amber); font-size: var(--type-form-label); font-weight: 650; }.unsaved-indicator::before { width: 6px; height: 6px; border-radius: 50%; background: currentColor; content: ''; }
-.tabs { position: sticky; z-index: 6; top: 0; margin-top: 7px; }.tabs button { min-height: var(--control-height); border-radius: 6px 6px 0 0; font-size: var(--type-form-body); font-weight: 600; }.tab-issue-count { display: inline-grid; min-width: 18px; height: 18px; margin-left: 6px; place-items: center; border-radius: 9px; background: var(--red); color: #fff; font-size: 10px; }.config-panel { min-height: 360px; padding: 18px; border: 1px solid #f0f0f0; border-radius: 8px; background: #fff; }
+.editor-step-aside .tabs { display: grid; margin: 0; overflow: visible; border: 0; }
+.editor-step-aside .tabs button { display: grid; min-height: 46px; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 9px 12px; border: 0; border-left: 3px solid transparent; border-radius: 0; color: #5f6f85; font-size: var(--type-form-body); font-weight: 600; text-align: left; }
+.editor-step-aside .tabs button:hover { background: #f5f8ff; }
+.editor-step-aside .tabs button.active { border-left-color: var(--blue); background: var(--blue-soft); color: var(--management-link); }
+.editor-step-aside .tabs button > i { display: grid; width: 22px; height: 22px; place-items: center; border: 1px solid #d9e0ea; border-radius: 50%; background: #fff; color: #77869a; font: normal 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.editor-step-aside .tabs button.active > i { border-color: #91caff; color: var(--blue); }
+.tab-issue-count { display: inline-grid; min-width: 18px; height: 18px; place-items: center; border-radius: 9px; background: var(--red); color: #fff; font-size: 10px; }
+.editor-step-help { margin: 0; padding: 12px 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; line-height: 1.6; }
+.editor-main { min-width: 0; }
+.config-panel { min-height: 420px; padding: 18px; border: 1px solid #f0f0f0; border-radius: 8px; background: #fff; }
+.inspector-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 13px 14px; border-bottom: 1px solid var(--line); background: #fafbfd; }
+.inspector-heading span { color: #526078; font-size: var(--type-form-label); font-weight: 700; }
+.inspector-heading b { color: var(--amber); font-size: 12px; }
+.inspector-heading b.ready { color: var(--green); }
+.inspector-facts { margin: 0; padding: 5px 14px; }
+.inspector-facts div { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 0; border-bottom: 1px solid #f0f0f0; }
+.inspector-facts dt { color: var(--muted); font-size: 12px; }
+.inspector-facts dd { margin: 0; color: var(--text); font-size: 12px; font-weight: 650; }
+.inspector-issues { display: grid; gap: 6px; padding: 10px; }
+.inspector-issues button { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 8px; padding: 9px 10px; border: 1px solid #ffe7ba; border-radius: 6px; background: #fffaf0; color: #ad4e00; text-align: left; }
+.inspector-issues button:hover { border-color: #ffc069; background: var(--amber-soft); }
+.inspector-issues span { grid-column: 1; color: #8c6d1f; font-size: 11px; }
+.inspector-issues b { grid-column: 1; font-size: 12px; line-height: 1.45; }
+.inspector-issues i { grid-column: 2; grid-row: 1 / 3; align-self: center; font-style: normal; }
+.inspector-ready { display: grid; gap: 4px; margin: 10px; padding: 12px; border: 1px solid #b7eb8f; border-radius: 6px; background: var(--green-soft); }
+.inspector-ready b { color: var(--green); font-size: 13px; }
+.inspector-ready span { color: #3f6600; font-size: 11px; line-height: 1.55; }
 .config-panel .form-grid label { font-size: var(--type-form-label); }.config-panel .form-grid input, .config-panel .form-grid select { min-height: var(--control-height); color: var(--text); font-size: var(--type-form-body); }.config-panel .code-editor { font-size: var(--type-form-body); }
 .published-edit-notice { display: flex; align-items: center; gap: 12px; margin: 0 0 12px; padding: 11px 14px; border: 1px solid #ffd591; border-radius: 6px; background: var(--amber-soft); color: #d46b08; font-size: var(--type-form-label); }.published-edit-notice b { flex: 0 0 auto; color: #ad4e00; }.published-edit-notice span { color: #874d00; }
 .data-linkage-grid { display: grid; grid-template-columns: 1.05fr 1fr 1.2fr; gap: 12px; }.linkage-step { min-width: 0; padding: 15px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fafafa; }.linkage-step.disabled { opacity: .62; }.linkage-step h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 4px; color: var(--ink); font-size: 15px; }.linkage-step h3 span { display: grid; width: 24px; height: 24px; place-items: center; border-radius: 50%; background: var(--blue); color: #fff; font-size: 12px; }.linkage-step > p { min-height: 40px; margin: 0 0 10px; color: var(--muted); font-size: var(--type-form-label); }.catalog-search { display: block; color: #526078; font-size: var(--type-form-label); font-weight: 650; }.catalog-search input { width: 100%; height: var(--control-height); margin-top: 7px; padding: 0 11px; border: 1px solid #d9d9d9; border-radius: var(--radius-sm); outline: 0; background: #fff; color: var(--text); font-size: var(--type-form-body); }.catalog-search input:focus { border-color: #1677ff; box-shadow: 0 0 0 3px #1677ff1a; }.catalog-options, .element-options { max-height: 270px; margin-top: 8px; overflow: auto; }.catalog-options > button { display: grid; width: 100%; gap: 3px; padding: 10px 11px; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; text-align: left; }.catalog-options > button:hover, .catalog-options > button.selected { border-color: #91caff; background: var(--blue-soft); }.catalog-options code { overflow: hidden; color: var(--management-link); font-size: var(--type-form-body); text-overflow: ellipsis; }.catalog-options b { overflow: hidden; color: var(--ink); font-size: var(--type-form-body); text-overflow: ellipsis; white-space: nowrap; }.catalog-options small, .element-options small { color: var(--muted); font-size: var(--type-form-label); }.catalog-empty { padding: 22px 8px; color: var(--muted); text-align: center; font-size: var(--type-form-body); }.select-all { width: 100%; margin-top: 8px; padding: 9px 10px; border: 1px solid #91caff; border-radius: var(--radius-sm); background: var(--blue-soft); color: var(--management-link); font-size: var(--type-form-label); text-align: left; }.element-options > label { display: flex; align-items: flex-start; gap: 8px; padding: 10px; border: 1px solid transparent; border-radius: var(--radius-sm); cursor: pointer; }.element-options > label:hover, .element-options > label.selected { border-color: #91caff; background: var(--blue-soft); }.element-options input { width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--blue); }.element-options span { min-width: 0; }.element-options b, .element-options small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.element-options b { font-size: var(--type-form-body); }.binding-summary { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-top: 14px; padding: 14px 16px; border: 1px solid #91caff; border-radius: var(--radius-md); background: var(--blue-soft); }.binding-summary b, .binding-summary small { display: block; }.binding-summary b { font-size: var(--type-form-body); }.binding-summary small { margin-top: 3px; color: var(--text); font-size: var(--type-form-label); }.binding-summary strong { flex: 0 0 auto; color: var(--management-link); font-size: var(--type-form-body); }.selected-element-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }.selected-element-chips span { padding: 4px 8px; border: 1px solid #91caff; border-radius: 4px; background: #fff; color: var(--management-link); font-size: var(--type-form-label); }
@@ -940,6 +994,7 @@ body .page .message-detail .detail-format { color: #5c6d84; font: 500 14px/1.55 
 .file-generation-flow { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 14px; border: 1px solid #a9bcf5; border-radius: var(--radius-md); background: #f5f8ff; color: var(--management-link); font-size: var(--type-form-body); }
 .file-generation-flow span { padding: 7px 11px; border-radius: var(--radius-sm); background: #fff; }.file-generation-flow b { color: #7894e9; }
 .file-inspection-result { display: flex; align-items: stretch; gap: 10px; margin-top: 16px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fafbfd; }.file-inspection-result > div, .file-inspection-result button { min-width: 150px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; text-align: left; }.file-inspection-result button { cursor: pointer; }.file-inspection-result button.selected { border-color: var(--blue); background: var(--blue-soft); }.file-inspection-result span, .file-inspection-result b, .file-inspection-result small { display: block; }.file-inspection-result span, .file-inspection-result small { color: var(--muted); font-size: var(--type-form-label); }.file-inspection-result b { margin: 4px 0; color: var(--ink); font-size: var(--type-form-body); }
-@media (max-width: 1100px) { .data-linkage-grid { grid-template-columns: 1fr; }.linkage-step > p { min-height: 0; }.file-generation-flow { align-items: stretch; flex-direction: column; }.file-generation-flow b { display: none; }.value-binding-editor { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 1320px) { .editor-workbench { grid-template-columns: 170px minmax(0, 1fr); }.editor-inspector { position: static; grid-column: 1 / -1; }.inspector-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }.inspector-facts div { border-right: 1px solid #f0f0f0; border-bottom: 0; }.inspector-issues { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 1100px) { .editor-workbench { grid-template-columns: 1fr; }.editor-step-aside { position: static; }.editor-step-aside .tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }.editor-step-aside .tabs button { border-left: 0; border-bottom: 2px solid transparent; }.editor-step-aside .tabs button.active { border-bottom-color: var(--blue); }.editor-step-help { display: none; }.data-linkage-grid { grid-template-columns: 1fr; }.linkage-step > p { min-height: 0; }.file-generation-flow { align-items: stretch; flex-direction: column; }.file-generation-flow b { display: none; }.value-binding-editor { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 900px) { .list-toolbar, .filters { align-items: stretch; flex-direction: column; }.filters label { width: 100%; }.binding-overview { grid-template-columns: 1fr; }.binding-overview > div { border-right: 0; border-bottom: 1px solid #e7ecf3; }.linked-elements-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }.time-binding-guide { grid-template-columns: 1fr 1fr; }.pre-generate-layout { grid-template-columns: 1fr; }.pre-generate-facts { grid-template-columns: 1fr; } }
 </style>

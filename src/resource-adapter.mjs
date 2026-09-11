@@ -29,7 +29,13 @@ export function serializeResource(item = {}) {
 /** 兼容历史 FILE_REFERENCE 类型，页面只暴露当前 FILE 业务术语。 */
 export function normalizeTemplate(resource) {
   const template = flattenResource(resource)
-  return template.type === 'FILE_REFERENCE' ? { ...template, type: 'FILE' } : template
+  const normalized = template.type === 'FILE_REFERENCE' ? { ...template, type: 'FILE' } : template
+  return {
+    ...normalized,
+    // 历史报文不再根据数据项 is_rt 猜测类型；由用户下次配置时明确确认。
+    businessType: normalized.businessType || 'UNKNOWN',
+    timeGenerationMode: normalized.timeGenerationMode || 'DATA_POLICY'
+  }
 }
 
 /** 数据项接口不是通用资源包装，保持其只读聚合标识与中文名称。 */

@@ -150,13 +150,13 @@ function handleMessageStatusKey(event, status) {
 
     <section class="summary-grid">
       <article class="summary-card">
-        <span>执行批次</span><strong>{{ executionPage.total }}</strong><small>符合当前查询条件</small>
+        <span>符合筛选的执行批次</span><strong>{{ executionPage.total }}</strong><small>全部查询结果</small>
       </article>
       <article class="summary-card success">
-        <span>本页成功</span><strong>{{ executionCounts.success }}</strong><small>当前页全部目标投递成功</small>
+        <span>当前页成功</span><strong>{{ executionCounts.success }}</strong><small>仅统计当前页 · 全部目标成功</small>
       </article>
       <article class="summary-card danger">
-        <span>本页异常</span><strong>{{ executionCounts.failed }}</strong><small>可进入详情查看原因</small>
+        <span>当前页异常</span><strong>{{ executionCounts.failed }}</strong><small>仅统计当前页 · 可进入详情定位</small>
       </article>
     </section>
 
@@ -225,7 +225,7 @@ function handleMessageStatusKey(event, status) {
           <section class="evidence-chain" aria-label="Execution 执行证据链"><div class="evidence-heading"><span>{{ selectedExecution.status === 'SUCCESS' ? '投递成功' : selectedExecution.status === 'FAILED' ? '执行失败' : selectedExecution.status === 'PARTIAL_SUCCESS' ? '部分投递成功' : '执行状态待确认' }}</span><small>仅展示已有执行证据，未记录的阶段不代表已完成。</small></div><ol><li v-for="step in evidenceSteps" :key="step.key" :class="step.state"><i></i><div><b>{{ step.label }}</b><small>{{ step.hint }}</small></div></li></ol></section>
         </DetailSection>
         <div v-if="selectedExecution.errorSummary" class="execution-error"><b>执行失败原因</b><p>{{ selectedExecution.errorSummary }}</p></div>
-        <div v-if="selectedExecution.messageType === 'FILE'" class="notice">文件类报文展示最终 MQ 报文内容和生成后的文件地址，文件本体保存在 Nginx 文件目录。</div>
+        <div v-if="selectedExecution.messageType === 'FILE'" class="notice">文件类报文展示最终 MQ 报文内容和生成后的文件地址，文件本体保存在报文配置所选的 OSS 或 OBS。</div>
         <DetailSection title="逐目标投递明细" description="查看每个 MQ 目标的独立投递结果" :count="filteredMessages.length">
           <template #actions><div class="message-status-filter"><span>投递状态</span><div class="segmented" role="tablist" aria-label="筛选逐目标投递状态"><button v-for="item in [['ALL','全部'],['SUCCESS','成功'],['FAILED','失败']]" :key="item[0]" type="button" role="tab" :data-message-status="item[0]" :aria-selected="messageStatus === item[0]" :tabindex="messageStatus === item[0] ? 0 : -1" :class="{ active: messageStatus === item[0] }" @click="selectMessageStatus(item[0])" @keydown="handleMessageStatusKey($event, item[0])">{{ item[1] }}</button></div></div></template>
           <div v-if="isPending(`load-messages:${selectedExecution.id}`)" class="detail-loading"><i></i><span>正在读取逐目标投递结果…</span></div>

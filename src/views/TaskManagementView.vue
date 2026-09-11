@@ -568,7 +568,7 @@ const {dirty: formDirty, confirmClose: confirmFormClose} = useFormLeaveGuard(
     <AppModal v-if="dialog === 'messages' && selected" :title="`执行报文 · ${latestExecution?.id}`" wide
               @close="dialog = ''">
       <div v-if="selectedTemplate?.type === 'FILE'" class="notice">文件类报文只发送文件地址及元数据；文件本体保存在
-        OSS、FTP 或 Nginx 文件存储。
+        报文配置所选的 OSS 或 OBS 对象存储。
       </div>
       <div class="filter-row">
         <button v-for="item in [['ALL','全部'],['SUCCESS','成功'],['FAILED','失败']]" :key="item[0]"

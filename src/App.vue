@@ -71,6 +71,19 @@ const pageTitle = computed(() => navigation.find(item => item.key === activePage
 const serviceState = computed(() => Object.values(resourceErrors).some(Boolean)
   ? {label: '部分数据更新失败', tone: 'error'}
   : {label: updatedAt.value ? '数据已更新' : '尚未读取数据', tone: 'neutral'})
+const componentHealthState = computed(() => {
+  if (!components.value.length) return {label: '暂无消息云组件', detail: '请先完成组件配置', tone: 'neutral'}
+  const results = components.value.map(item => connectionChecks[item.id + ':']).filter(Boolean)
+  if (!results.length) return {label: '消息云连接：未检测', detail: '前往消息云组件执行连接检测', tone: 'neutral'}
+  const failures = results.filter(item => !item.success)
+  const latest = results.reduce((current, item) => {
+    const time = Date.parse(item.checkedAt)
+    return Number.isFinite(time) && time > current.time ? {time, label: item.checkedAt} : current
+  }, {time: -Infinity, label: ''}).label
+  if (failures.length) return {label: `消息云连接：${failures.length} 项异常`, detail: latest ? `最近检测于 ${latest}` : '请重新检测异常组件', tone: 'negative'}
+  if (results.length < components.value.length) return {label: `消息云连接：已检测 ${results.length}/${components.value.length}`, detail: '未检测组件不代表可用', tone: 'warning'}
+  return {label: '消息云连接：最近检测通过', detail: latest ? `最近检测于 ${latest}` : '检测结果来自当前会话', tone: 'positive'}
+})
 const authenticatedUsername = computed(() => getAuthenticatedUsername(currentUser.value))
 const authenticatedRole = computed(() => getAuthenticatedRole(currentUser.value))
 const canManage = computed(() => canManageConfiguration(currentUser.value))
@@ -617,12 +630,13 @@ onMounted(initialize)
       <p class="navigation-label">{{ group.label }}</p>
       <nav class="navigation" aria-label="主导航">
         <button v-for="item in group.items" :key="item.key" class="nav-item" :class="{ active: activePage === item.key }"
+                :aria-current="activePage === item.key ? 'page' : undefined"
                 :aria-label="item.label" :title="item.label" @click="navigate(item.key)">
           <AppIcon :name="item.icon"/>
           <span>{{ item.label }}</span></button>
       </nav>
       </template>
-      <div class="environment-card"><span>{{ Object.keys(connectionChecks).length ? '连接检测结果见消息云组件' : '消息云状态：未检测' }}</span><small>{{ updatedAt ? '数据更新于 ' + updatedAt : '等待数据加载' }}</small></div>
+      <div class="environment-card" :class="componentHealthState.tone"><span>{{ componentHealthState.label }}</span><small>{{ componentHealthState.detail }}</small></div>
     </aside>
     <div class="content-shell">
       <header class="topbar">
@@ -636,7 +650,7 @@ onMounted(initialize)
             class="account-name">{{ authenticatedUsername }}</span><span class="account-role">{{ authenticatedRole === 'ADMIN' ? '管理员' : '任务操作员' }}</span>
           <button class="logout-button" :disabled="pendingActions.has('logout')" @click="logout">
             <AppIcon name="logout" :size="16"/>
-            {{ pendingActions.has('logout') ? '正在退出…' : '退出' }}
+            <span>{{ pendingActions.has('logout') ? '正在退出…' : '退出' }}</span>
           </button>
         </div>
       </header>
@@ -694,7 +708,9 @@ onMounted(initialize)
 .account-area {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 11px;
+  white-space: nowrap;
 }
 
 .account-name {

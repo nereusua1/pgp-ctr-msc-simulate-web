@@ -1,3 +1,5 @@
+import {createRequestId} from './request-id.mjs'
+
 const pad = value => String(value).padStart(2, '0')
 
 export function localDateTimeValue(date = new Date()) {
@@ -68,7 +70,7 @@ function replaceFileReferences(value, fileName) {
   }
 }
 
-export function preGenerateMessage(template, plannedValue, now = new Date()) {
+export function preGenerateMessage(template, plannedValue, now = new Date(), uuidFactory = createRequestId) {
   const plannedAt = plannedValue ? new Date(plannedValue) : now
   if (Number.isNaN(plannedAt.getTime())) throw new Error('计划触发时间无效')
   let content
@@ -82,7 +84,8 @@ export function preGenerateMessage(template, plannedValue, now = new Date()) {
       : String(template.content || '').split('\n').length)
     throw new Error(`报文内容不是有效的 JSON${line ? `（第 ${line} 行附近）` : ''}，无法预生成`)
   }
-  const messageId = `PREVIEW-${formatTime(plannedAt, 'yyyyMMddHHmmss')}`
+  // 预生成与真实执行保持同一标识格式，便于在投递前直接核对正文 Message ID。
+  const messageId = uuidFactory()
   const endAt = new Date(plannedAt.getTime() + periodHours(template) * 3600000)
   const warnings = []
   const replacedPaths = []

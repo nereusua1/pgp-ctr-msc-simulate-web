@@ -190,20 +190,6 @@ const sparkPoints = points => {
       <p v-if="!tasks.length" class="empty-state">暂无可操作任务，请联系管理员。</p>
       <button class="link-button" @click="emit('navigate', 'logs')">查看执行记录</button>
     </section>
-    <section v-if="canManage" class="card attention-card">
-      <div class="card-heading"><div><h2>待处理事项</h2><p>先处理影响执行的配置问题；连接状态仅代表最近一次检测结果。</p></div></div>
-      <div class="attention-list">
-        <div v-for="item in attentionTasks" :key="item.task.id" class="attention-row"><div><b>{{ item.task.name }}</b><p>{{ item.reason }}，请修正后再执行。</p></div><button class="link-button" @click="emit('task-action', item.task)">查看任务 →</button></div>
-        <div v-for="item in failedConnections" :key="'connection-' + item.id" class="attention-row"><div><b>{{ item.name }}</b><p>最近连接检测失败，请检查连接配置后重新检测。</p></div><button class="link-button" @click="emit('navigate', 'message-components', {keyword: item.name})">检查组件 →</button></div>
-        <p v-if="!attentionTasks.length && !failedConnections.length" class="muted">当前已加载配置中未发现上述问题；未检测的连接不代表可用。</p>
-      </div>
-      <div class="runtime-metrics">
-        <div><b>消息云组件</b><p>{{ components.length }} 个 · {{ components.length - checkedComponents.length }} 个未检测 · {{ failedConnections.length }} 个最近检测失败</p><button class="link-button" @click="emit('navigate', 'message-components')">检查连接</button></div>
-        <div><b>报文模板</b><p>{{ templates.length }} 份配置</p><button class="link-button" @click="emit('navigate', 'messages')">维护模板</button></div>
-        <div><b>任务配置</b><p>{{ incompleteTasks.length }} 个任务未找到关联模板</p><button class="link-button" @click="emit('navigate', 'tasks')">检查任务</button></div>
-        <div><b>执行结果</b><p>按批次查看失败阶段和原因</p><button class="link-button" @click="emit('navigate', 'logs')">查看执行记录</button></div>
-      </div>
-    </section>
     <template v-if="canManage">
     <section class="runtime-summary" :class="health.tone" aria-label="运行健康状态">
       <div class="health-message"><span class="health-dot"></span><div><h2>{{ health.label }}</h2><p>{{ health.description }}</p></div><button class="text-link" @click="emit('navigate', 'logs')">查看执行记录 <AppIcon name="arrow" :size="14" /></button></div>
@@ -215,12 +201,27 @@ const sparkPoints = points => {
       </dl>
     </section>
 
+    <section class="card attention-card" :class="{ calm: !attentionTasks.length && !failedConnections.length }">
+      <div class="card-heading"><div><h2>待处理事项 <span v-if="attentionTasks.length + failedConnections.length" class="attention-count">{{ attentionTasks.length + failedConnections.length }}</span></h2><p>仅展示当前数据中可确认的配置问题；未检测的连接不会被视为可用。</p></div></div>
+      <div class="attention-list">
+        <div v-for="item in attentionTasks" :key="item.task.id" class="attention-row"><div><b>{{ item.task.name }}</b><p>{{ item.reason }}，请修正后再执行。</p></div><button class="link-button" @click="emit('task-action', item.task)">查看任务 →</button></div>
+        <div v-for="item in failedConnections" :key="'connection-' + item.id" class="attention-row"><div><b>{{ item.name }}</b><p>最近连接检测失败，请检查连接配置后重新检测。</p></div><button class="link-button" @click="emit('navigate', 'message-components', {keyword: item.name})">检查组件 →</button></div>
+        <p v-if="!attentionTasks.length && !failedConnections.length" class="muted">当前已加载数据中没有可确认的阻断项。</p>
+      </div>
+      <div class="readiness-grid">
+        <div><b>消息云组件</b><p>{{ components.length }} 个 · {{ components.length - checkedComponents.length }} 个未检测 · {{ failedConnections.length }} 个最近检测失败</p><button class="link-button" @click="emit('navigate', 'message-components')">检查连接</button></div>
+        <div><b>报文模板</b><p>{{ templates.length }} 份配置</p><button class="link-button" @click="emit('navigate', 'messages')">维护模板</button></div>
+        <div><b>任务配置</b><p>{{ incompleteTasks.length }} 个任务未找到关联模板</p><button class="link-button" @click="emit('navigate', 'tasks')">检查任务</button></div>
+        <div><b>执行结果</b><p>按批次查看失败阶段和原因</p><button class="link-button" @click="emit('navigate', 'logs')">查看执行记录</button></div>
+      </div>
+    </section>
+
     <section v-if="hasAnalyticsData" class="primary-grid">
       <article class="card trend-card">
         <div class="card-heading"><div><h2>{{ rangeLabel }}执行趋势</h2><p>报文量与投递成功率使用相同统计窗口；悬停查看具体时点。</p></div><span class="chart-period">{{ expectedTrendCount }} 个时间刻度</span></div>
         <div v-if="trend.length" class="trend-chart">
           <svg viewBox="0 0 760 216" role="img" :aria-label="`${rangeLabel}执行量和成功率趋势`">
-            <defs><linearGradient id="success-area-gradient" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#3970dc" stop-opacity=".16" /><stop offset="100%" stop-color="#3970dc" stop-opacity="0" /></linearGradient></defs>
+            <defs><linearGradient id="success-area-gradient" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#3970dc" stop-opacity=".18" /><stop offset="100%" stop-color="#3970dc" stop-opacity="0" /></linearGradient></defs>
             <title>{{ rangeLabel }}执行趋势</title>
             <desc>柱形使用左侧投递量坐标轴，折线使用右侧成功率坐标轴。</desc>
             <text class="axis-title volume-title" :x="chartPlot.left" y="14">投递量</text>
@@ -284,7 +285,8 @@ const sparkPoints = points => {
 </template>
 
 <style scoped>
-.attention-list { padding: 0 20px; }.attention-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 14px 0; border-bottom: 1px solid #f0f0f0; }.attention-row b { font-size: 15px; }.attention-row p { margin: 5px 0 0; color: #595959; font-size: 14px; }
+.attention-card.calm { border-top-color: #d9d9d9; }.attention-list { padding: 0 20px; }.attention-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 14px 0; border-bottom: 1px solid #f0f0f0; }.attention-row b { font-size: 15px; }.attention-row p { margin: 5px 0 0; color: #595959; font-size: 14px; }
+.readiness-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 4px; border-top: 1px solid #f0f0f0; }.readiness-grid > div { min-width: 0; padding: 15px 20px; border-left: 1px solid #f0f0f0; }.readiness-grid > div:first-child { border-left: 0; }.readiness-grid b { color: #314760; font-size: 13px; }.readiness-grid p { min-height: 42px; margin: 5px 0 4px; color: #748297; font-size: 12px; line-height: 1.6; }
 .overview-page { display: grid; gap: 16px; padding-bottom: 44px; }
 .overview-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 2px; padding-top: 2px; }
 .overview-controls { display: flex; align-items: center; gap: 10px; }
