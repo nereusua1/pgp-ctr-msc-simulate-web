@@ -54,10 +54,16 @@ test('数组通配符绑定应替换 records 中的每一条记录', () => {
   assert.deepEqual(result.warnings, [])
 })
 
-test('FILE 预生成产生 SIM 文件名并更新外层报文引用', () => {
-  const result = preGenerateMessage({...template, type:'FILE', content:JSON.stringify({fileName:'SOURCE.csv', filePath:'http://localhost/files/SOURCE.csv'}), fileGeneration:{sourceFileName:'SOURCE.csv'}, bindings:[]}, '2026-09-08T14:00:00')
-  assert.equal(result.fileName, 'SOURCE_SIM_20260908140000.csv')
-  assert.match(result.content, /SOURCE_SIM_20260908140000\.csv/)
+test('FILE 预生成按配置替换文件名时间且不追加系统后缀', () => {
+  const result = preGenerateMessage({...template, type:'FILE', content:JSON.stringify({fileName:'SUN_RISE111_20180907_20190907.csv', filePath:'http://localhost/files/SUN_RISE111_20180907_20190907.csv'}), fileGeneration:{sourceFileName:'SUN_RISE111_20180907_20190907.csv', fileNameBindings:[{index:0, format:'yyyyMMdd', source:'BUSINESS_BASE_TIME'}, {index:1, format:'yyyyMMdd', source:'PRESERVE_OFFSET', relativeTo:0}]}, bindings:[]}, '2026-09-08T14:00:00')
+  assert.equal(result.fileName, 'SUN_RISE111_20260908_20270908.csv')
+  assert.match(result.content, /SUN_RISE111_20260908_20270908\.csv/)
+})
+
+test('FILE 文件名可使用业务基准日期零点且不改变时效编号', () => {
+  const sourceName = 'MSP3_PMSC_SMMFC_RSM_LM10-50_CHN_20250917000000_00000-02400.csv'
+  const result = preGenerateMessage({...template, type: 'FILE', content: JSON.stringify({fileName: sourceName, filePath: `http://localhost/files/${sourceName}`}), fileGeneration: {sourceFileName: sourceName, parserMode: 'PASSTHROUGH', fileNameBindings: [{index: 0, format: 'yyyyMMddHHmmss', source: 'BUSINESS_DAY_START'}], contentBindings: []}, bindings: []}, '2026-09-08T14:00:00')
+  assert.equal(result.fileName, 'MSP3_PMSC_SMMFC_RSM_LM10-50_CHN_20260908000000_00000-02400.csv')
 })
 
 test('复制报文固定生成草稿且默认移除投递目标', () => {

@@ -4,6 +4,7 @@ import ListPagination from '../components/ListPagination.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import AppModal from '../components/AppModal.vue'
 import AppDetailPage from '../components/AppDetailPage.vue'
+import AppDrawer from '../components/AppDrawer.vue'
 import {setRoute} from '../page-route.mjs'
 import {useListState} from '../list-state.mjs'
 import {latestRequest} from '../interaction-policy.mjs'
@@ -16,7 +17,8 @@ import DetailSection from '../components/DetailSection.vue'
 import TruncatedText from '../components/TruncatedText.vue'
 import * as api from '../api'
 import {copyMessageDraft, localDateTimeValue, preGenerateMessage} from '../message-pre-generation.mjs'
-import {createFileGeneration, normalizeStorageType} from '../file-storage.mjs'
+import {createFileGeneration, normalizeFileGeneration, normalizeStorageType} from '../file-storage.mjs'
+import {FILE_CONTENT_MODES, FILE_RULE_PRESETS, FILE_TIME_SOURCES, fileRulePreset} from '../file-rule-presets.mjs'
 import {normalizeTimeBinding, recommendedTimeStrategy, TIME_STRATEGIES, timeStrategiesForPath} from '../time-binding.mjs'
 import {createRequestId} from '../request-id.mjs'
 
@@ -25,6 +27,17 @@ const emit = defineEmits(['update', 'create', 'remove', 'notify', 'check-compone
 const selectedId = ref(props.templates[0]?.id || '')
 const {keyword, status: statusFilter, page, pageSize} = useListState('messages')
 const activeTab = ref('basic')
+const bindingSection = ref('time')
+const bindingFilter = ref('ALL')
+const bindingKeyword = ref('')
+const valueFieldKeyword = ref('')
+const inspectorOpen = ref(false)
+const valueBindingEditorOpen = ref(false)
+const bindingPreviewOpen = ref(false)
+const bindingPreview = ref(null)
+const bindingPreviewTime = ref('')
+const bindingPreviewError = ref('')
+const editingValueBindingId = ref('')
 const dialog = ref('')
 const editorPreview = ref(false)
 const activeTargetComponentId = ref('')
@@ -50,6 +63,7 @@ const elementOptions = ref([])
 const catalogLoading = reactive({ dataItems: false, sources: false, elements: false })
 const fileInspection = ref(null)
 const fileInspecting = ref(false)
+const selectedFilePresetId = ref('')
 const savedFormSnapshot = ref('')
 const timeStrategies = TIME_STRATEGIES
 const valueProviders = [
@@ -135,6 +149,17 @@ const detectedScalarFields = computed(() => {
   } catch { return [] }
 })
 const valueRuleBindings = computed(() => (form.bindings || []).filter(binding => binding.kind === 'VALUE_RULE'))
+const visibleTimeFields = computed(() => detectedTimeFields.value.filter(field => {
+  const configured = Boolean(timeBindingOf(field.path))
+  const matchesFilter = bindingFilter.value === 'ALL' || (bindingFilter.value === 'ACTIVE' ? configured : !configured)
+  const search = bindingKeyword.value.trim().toLowerCase()
+  return matchesFilter && (!search || [field.field, field.path, field.sample].some(value => String(value || '').toLowerCase().includes(search)))
+}))
+const drawerScalarFields = computed(() => {
+  const search = valueFieldKeyword.value.trim().toLowerCase()
+  return detectedScalarFields.value.filter(field => !search || [field.field, field.path, field.sample]
+    .some(value => String(value ?? '').toLowerCase().includes(search)))
+})
 const configuredTimeBindingCount = computed(() => detectedTimeFields.value.filter(field => timeBindingOf(field.path)).length)
 const allTimeFieldsSelected = computed(() => detectedTimeFields.value.length > 0
   && detectedTimeFields.value.every(field => Boolean(timeBindingOf(field.path))))
@@ -143,6 +168,14 @@ const invalidTimeBindings = computed(() => (form.bindings || []).filter(binding 
   && (!timeStrategiesForPath(binding.path).some(item => item[0] === binding.strategy) || Object.prototype.hasOwnProperty.call(binding, 'offset'))))
 const invalidValueBindings = computed(() => valueRuleBindings.value.filter(binding => !binding.path
   || !valueProviders.some(item => item[0] === binding.provider) || (binding.provider === 'CONSTANT' && binding.value === undefined)))
+function hasFileGenerationRule() {
+  const generation = form.fileGeneration || {}
+  if (generation.parserMode === 'PASSTHROUGH') return Boolean(generation.fileNameBindings?.length)
+  if (generation.parserMode === 'POSITIONAL_TEXT') return Boolean(generation.contentBindings?.length
+    && generation.contentBindings.every(binding => binding.locator?.type && binding.format
+      && (binding.mode !== 'SHIFT_BY_FILENAME_DELTA' || generation.fileNameBindings?.some(item => Number(item.index) === Number(binding.referenceFileNameTimeIndex ?? 0)))))
+  return Boolean(generation.fileNameBindings?.length || generation.contentBindings?.length)
+}
 const configurationTabs = computed(() => [
   ['basic', '基本信息'], ['content', '报文内容'], ['data', '数据关联'],
   ...(form.type === 'FILE' ? [['file', '文件模板']] : []),
@@ -160,12 +193,16 @@ const reviewIssues = computed(() => {
   if (!['TRIGGER_TIME', 'DATA_POLICY'].includes(form.timeGenerationMode)) issues.push({tab: 'basic', message: '选择时间生成方式'})
   try { JSON.parse(form.content || '') } catch { issues.push({tab: 'content', message: '修正报文 JSON 格式'}) }
   if (!hasCompleteDataBinding()) issues.push({tab: 'data', message: '完成数据源、数据项和要素关联'})
-  if (form.type === 'FILE' && !form.fileGeneration?.timeColumn) issues.push({tab: 'file', message: '配置文件时间字段'})
+  if (form.type === 'FILE' && !form.fileGeneration?.sourceFilePath && !findFirstField(form.content, 'filePath')) issues.push({tab: 'file', message: '配置源文件地址'})
+  if (form.type === 'FILE' && !hasFileGenerationRule()) issues.push({tab: 'file', message: form.fileGeneration?.parserMode === 'PASSTHROUGH' ? '配置文件名时间规则' : '配置文件名或内容时间规则'})
   if (invalidTimeBindings.value.length || invalidValueBindings.value.length) issues.push({tab: 'bindings', message: '修正变量绑定路径或值来源'})
   if (!hasCompleteTargets()) issues.push({tab: 'target', message: '为投递目标配置 Group 和 Topic'})
   return issues
 })
 const completedTabCount = computed(() => configurationTabs.value.length - new Set(reviewIssues.value.map(issue => issue.tab)).size)
+const activeTabIndex = computed(() => Math.max(0, configurationTabs.value.findIndex(tab => tab[0] === activeTab.value)))
+const hasPreviousTab = computed(() => activeTabIndex.value > 0)
+const hasNextTab = computed(() => activeTabIndex.value < configurationTabs.value.length - 1)
 const tabIssueCount = tab => reviewIssues.value.filter(issue => issue.tab === tab).length
 const changedSections = computed(() => {
   if (!selected.value || !isEditorDirty.value) return []
@@ -176,6 +213,7 @@ const changedSections = computed(() => {
   return groups.filter(([, keys]) => keys.some(key => JSON.stringify(form[key]) !== JSON.stringify(selected.value[key]))).map(([label]) => label)
 })
 function locateIssue(issue) {
+  inspectorOpen.value = false
   activeTab.value = issue.tab
   requestAnimationFrame(() => {
     const panel = document.getElementById('config-panel-' + issue.tab)
@@ -241,10 +279,17 @@ function syncForm() {
   if (form.type === 'FILE' && !form.fileGeneration) {
     form.fileGeneration = createFileGeneration()
   }
-  if (form.type === 'FILE') form.fileGeneration.storageType = normalizeStorageType(form.fileGeneration.storageType)
-  if (form.type === 'FILE' && !form.fileGeneration.delimiter) form.fileGeneration.delimiter = ','
+  if (form.type === 'FILE') form.fileGeneration = normalizeFileGeneration(form.fileGeneration)
   fileInspection.value = null
   Object.assign(valueBindingDraft, { path: '', provider: 'MESSAGE_ID', targetType: 'string', value: '', format: 'yyyy-MM-dd HH:mm:ss' })
+  bindingSection.value = 'time'
+  bindingFilter.value = 'ALL'
+  bindingKeyword.value = ''
+  valueFieldKeyword.value = ''
+  inspectorOpen.value = false
+  valueBindingEditorOpen.value = false
+  bindingPreviewOpen.value = false
+  editingValueBindingId.value = ''
   savedFormSnapshot.value = currentFormSnapshot()
 }
 function openFor(item, target) {
@@ -314,7 +359,7 @@ function normalizedForm(status = form.status) {
   if (fileGeneration) delete fileGeneration.outputMarker
   return { ...form, status, deliveryTargets, componentIds, componentId: componentIds[0] || '', producerGroup: firstTarget.producerGroup || '', topic: firstTarget.topic || '', dataBinding, fileGeneration, bindings: (form.bindings || []).map(normalizeTimeBinding) }
 }
-function save() {
+function save(afterSave) {
   saveError.value = ''
   if ((selected.value?.status === 'PUBLISHED' || referenceTasks.value.length) &&
       !window.confirm(`本次保存会创建待发布版本，关联 ${referenceTasks.value.length} 个任务将继续使用当前发布版本，其中 ${referenceTasks.value.filter(item => item.status === 'ENABLED').length} 个已启用自动调度。确认保存草稿？`)) return
@@ -325,11 +370,12 @@ function save() {
     if (result?.success) {
       form.status = payload.status
       savedFormSnapshot.value = currentFormSnapshot()
+      if (typeof afterSave === 'function') afterSave()
     } else saveError.value = result?.error || '保存失败，输入已保留，请重试'
   })
 }
-function saveCurrentTab() {
-  if (activeTab.value === 'data') { saveDataBinding(); return }
+function saveCurrentTab(afterSave) {
+  if (activeTab.value === 'data') { saveDataBinding(afterSave); return }
   if (invalidTimeBindings.value.length || invalidValueBindings.value.length) {
     emit('notify', '变量绑定配置不完整，请检查字段路径和值来源', 'error')
     activeTab.value = 'bindings'
@@ -339,11 +385,11 @@ function saveCurrentTab() {
     emit('notify', '请为每个 MQ 实例分别选择 Producer Group 和 Topic', 'error')
     return
   }
-  if (activeTab.value === 'file' && !form.fileGeneration?.timeColumn) {
-    emit('notify', '请配置文件时间字段', 'error')
+  if (activeTab.value === 'file' && !hasFileGenerationRule()) {
+    emit('notify', form.fileGeneration?.parserMode === 'PASSTHROUGH' ? '原样复制模式必须配置文件名时间规则' : '请至少配置一条文件名或内容时间规则', 'error')
     return
   }
-  save()
+  save(afterSave)
 }
 function publish() {
   saveError.value = ''
@@ -351,7 +397,7 @@ function publish() {
   if (!window.confirm(`将发布当前整份配置并替换任务后续执行使用的版本，关联 ${referenceTasks.value.length} 个任务。请确认配置和投递目标。继续发布？`)) return
   if (invalidTimeBindings.value.length || invalidValueBindings.value.length) { emit('notify', '请先修正变量绑定配置', 'error'); activeTab.value = 'bindings'; return }
   if (!hasCompleteDataBinding()) { emit('notify', '请先完成数据源、数据项和要素项关联', 'error'); activeTab.value = 'data'; return }
-  if (form.type === 'FILE' && !form.fileGeneration?.timeColumn) {
+  if (form.type === 'FILE' && !hasFileGenerationRule()) {
     emit('notify', '请先完成 FILE 文件模板配置', 'error'); activeTab.value = 'file'; return
   }
   if (!hasCompleteTargets()) { emit('notify', '请先完成每个 MQ 实例的 Group 和 Topic 配置', 'error'); activeTab.value = 'target'; return }
@@ -369,6 +415,14 @@ function confirmEditorClose() {
 function selectConfigurationTab(tab) {
   if (tab === activeTab.value) return
   activeTab.value = tab
+}
+function moveConfigurationTab(offset) {
+  const next = configurationTabs.value[activeTabIndex.value + offset]
+  if (next) selectConfigurationTab(next[0])
+}
+function saveAndNext() {
+  if (!hasNextTab.value) { saveCurrentTab(); return }
+  saveCurrentTab(() => moveConfigurationTab(1))
 }
 function handleConfigurationTabKey(event, tab) {
   const tabs = configurationTabs.value.map(item => item[0])
@@ -565,9 +619,9 @@ function initializeDataSelector() {
   if (form.dataBinding?.sourceCode) loadDataItemOptions()
   if (form.dataBinding?.sourceCode) loadElementOptions()
 }
-function saveDataBinding() {
+function saveDataBinding(afterSave) {
   if (!hasCompleteDataBinding()) { emit('notify', '请依次选择数据源、数据项和至少一个要素项', 'error'); return }
-  save()
+  save(afterSave)
 }
 function collectTimeFields(value, path, fields) {
   if (Array.isArray(value)) {
@@ -609,6 +663,14 @@ function timeStrategyLabelForField(field) {
   const binding = timeBindingOf(field.path)
   return binding ? timeStrategyLabel(binding) : '不替换'
 }
+function timeStrategyDescription(strategy) {
+  return ({
+    TASK_TRIGGER_TIME: '直接写入本次计划触发时间',
+    BUSINESS_BASE_TIME: form.timeGenerationMode === 'TRIGGER_TIME' ? '使用本次计划触发时间' : '按实况准点或预报起报点对齐',
+    DATA_INTERVAL_SEQUENCE: '从业务基准时间开始，按数据项间隔递增',
+    PERIOD_END_TIME: '使用业务基准时间加数据项预报周期'
+  })[strategy] || '按照所选时间规则生成'
+}
 function toggleTimeBinding(field) {
   const list = [...(form.bindings || [])]
   const index = list.findIndex(binding => binding.path === field.path && (binding.kind === 'TIME_RULE' || binding.kind === 'TIME_OFFSET'))
@@ -639,38 +701,119 @@ function toggleAllTimeBindings() {
   form.bindings = (form.bindings || []).filter(binding => !detectedPaths.has(binding.path)
     || (binding.kind !== 'TIME_RULE' && binding.kind !== 'TIME_OFFSET'))
 }
-function addValueBinding() {
+function openValueBindingEditor(binding) {
+  editingValueBindingId.value = binding?.id || ''
+  Object.assign(valueBindingDraft, binding ? {
+    path: binding.path || '', provider: binding.provider || 'MESSAGE_ID', targetType: binding.targetType || 'string',
+    value: binding.value ?? '', format: binding.format || 'yyyy-MM-dd HH:mm:ss'
+  } : { path: '', provider: 'MESSAGE_ID', targetType: 'string', value: '', format: 'yyyy-MM-dd HH:mm:ss' })
+  valueFieldKeyword.value = ''
+  valueBindingEditorOpen.value = true
+}
+function saveValueBinding() {
   if (!valueBindingDraft.path) { emit('notify', '请先选择要绑定的报文字段', 'error'); return }
-  if (valueRuleBindings.value.some(binding => binding.path === valueBindingDraft.path)) {
+  if (valueRuleBindings.value.some(binding => binding.path === valueBindingDraft.path && binding.id !== editingValueBindingId.value)) {
     emit('notify', '该字段已经配置系统值绑定', 'error'); return
   }
   const binding = {
-    id: `value-rule-${Date.now()}-${(form.bindings || []).length}`,
+    id: editingValueBindingId.value || `value-rule-${Date.now()}-${(form.bindings || []).length}`,
     kind: 'VALUE_RULE', path: valueBindingDraft.path, provider: valueBindingDraft.provider,
     targetType: valueBindingDraft.targetType || 'string'
   }
   if (['PLANNED_TRIGGER_TIME', 'BUSINESS_BASE_TIME', 'PERIOD_END_TIME'].includes(binding.provider)) binding.format = valueBindingDraft.format
   if (binding.provider === 'CONSTANT') binding.value = valueBindingDraft.value
-  form.bindings = [...(form.bindings || []), binding]
+  const list = [...(form.bindings || [])]
+  const index = list.findIndex(item => item.id === editingValueBindingId.value)
+  if (index >= 0) list[index] = binding
+  else list.push(binding)
+  form.bindings = list
+  valueBindingEditorOpen.value = false
+  editingValueBindingId.value = ''
   Object.assign(valueBindingDraft, { path: '', provider: 'MESSAGE_ID', targetType: 'string', value: '', format: 'yyyy-MM-dd HH:mm:ss' })
 }
-function removeValueBinding(id) { form.bindings = (form.bindings || []).filter(binding => binding.id !== id) }
+function removeValueBinding(id) {
+  if (!window.confirm('确认删除这条系统值绑定？对应报文字段将在执行时保持模板原值。')) return
+  form.bindings = (form.bindings || []).filter(binding => binding.id !== id)
+  valueBindingEditorOpen.value = false
+  editingValueBindingId.value = ''
+}
 function valueProviderLabel(provider) { return valueProviders.find(item => item[0] === provider)?.[1] || provider }
+async function copyBindingPath(path) {
+  try { await navigator.clipboard.writeText(path); emit('notify', '字段路径已复制') }
+  catch { emit('notify', '复制失败，请手动复制字段路径', 'error') }
+}
+function openBindingPreview() {
+  bindingPreviewTime.value = localDateTimeValue()
+  bindingPreviewOpen.value = true
+  runBindingPreview()
+}
+function runBindingPreview() {
+  bindingPreviewError.value = ''
+  try { bindingPreview.value = preGenerateMessage(form, bindingPreviewTime.value) }
+  catch (error) { bindingPreview.value = null; bindingPreviewError.value = error.message }
+}
 async function inspectSourceFile() {
   const sourceReference = form.fileGeneration?.sourceFilePath || form.fileGeneration?.sourceFileName || findFirstField(form.content, 'filePath')
-  if (!sourceReference) { emit('notify', '请填写源文件对象路径，或先在报文内容中配置 filePath', 'error'); return }
+  if (!sourceReference) { emit('notify', '请填写源文件地址，或先在报文内容中配置 filePath', 'error'); return }
   fileInspecting.value = true
   try {
-    fileInspection.value = await api.inspectFile(sourceReference, form.fileGeneration?.delimiter || ',', form.fileGeneration?.storageType || 'OSS')
-    const first = fileInspection.value.timeColumns?.[0]
-    if (first) {
-      form.fileGeneration.timeColumn = first.columnName
-      form.fileGeneration.sourceTimeFormat = first.format
-      emit('notify', `已识别日期字段：${first.columnName}`)
-    } else emit('notify', '扫描完成，但未识别到支持的日期字段', 'error')
+    const configuredDelimiter = form.fileGeneration?.delimiter
+    const inspectionDelimiter = configuredDelimiter && configuredDelimiter !== 'AUTO' ? configuredDelimiter : (/\.txt(?:\?|$)/i.test(sourceReference) ? 'TAB' : ',')
+    fileInspection.value = await api.inspectFile(sourceReference, inspectionDelimiter, form.fileGeneration?.storageType || 'OSS')
+    const detected = fileInspection.value.timeColumns || []
+    if (detected.length) emit('notify', `已识别 ${detected.length} 个日期字段，请确认需要替换的字段`)
+    else emit('notify', '扫描完成，但未识别到完整日期字段；可配置组合字段或键值规则', 'error')
   } catch (error) { emit('notify', error.message, 'error') }
   finally { fileInspecting.value = false }
 }
+function applyFilePreset() {
+  const preset = fileRulePreset(selectedFilePresetId.value)
+  if (!preset || !preset.enabled) { emit('notify', '该样例规则尚待确认，暂不能应用', 'error'); return }
+  const currentPath = form.fileGeneration?.sourceFilePath || ''
+  const storageType = form.fileGeneration?.storageType || 'OSS'
+  const {id, name, enabled, ...rules} = preset
+  form.fileGeneration = normalizeFileGeneration({...rules, presetId: id, sourceFilePath: currentPath, storageType, schemaVersion: 2})
+  fileInspection.value = null
+  emit('notify', form.fileGeneration.parserMode === 'POSITIONAL_TEXT'
+    ? `已应用“${preset.name}”规则，请填写源文件地址并通过预生成验证`
+    : `已应用“${preset.name}”规则，请填写源文件地址并扫描验证`)
+}
+function addDetectedContentBinding(column) {
+  const bindings = form.fileGeneration.contentBindings || (form.fileGeneration.contentBindings = [])
+  if (bindings.some(binding => binding.fields?.includes(column.columnName))) return
+  bindings.push({mode: 'SHIFT', fields: [column.columnName], format: column.format, source: 'BUSINESS_BASE_TIME'})
+}
+function removeFileNameBinding(index) { form.fileGeneration.fileNameBindings.splice(index, 1) }
+function removeContentBinding(index) { form.fileGeneration.contentBindings.splice(index, 1) }
+function changeFileParserMode() {
+  fileInspection.value = null
+  form.fileGeneration.contentBindings = []
+}
+function addFileNameBinding() {
+  form.fileGeneration.fileNameBindings.push({index: form.fileGeneration.fileNameBindings.length, format: 'yyyyMMddHHmmss', source: 'BUSINESS_BASE_TIME', relativeTo: null})
+}
+function addContentBinding() {
+  if (form.fileGeneration.parserMode === 'POSITIONAL_TEXT') {
+    form.fileGeneration.contentBindings.push({
+      mode: 'SHIFT_BY_FILENAME_DELTA',
+      locator: {type: 'TOKEN_COLUMN', columnIndex: 0, separator: 'WHITESPACE', header: false},
+      format: 'yyyyMMddHHmm', source: 'BUSINESS_BASE_TIME', expectedMatches: 'ALL_ROWS', referenceFileNameTimeIndex: 0
+    })
+    return
+  }
+  form.fileGeneration.contentBindings.push({mode: 'SHIFT', fields: [''], format: 'yyyyMMddHHmmss', source: 'BUSINESS_BASE_TIME'})
+}
+function changePositionalLocator(binding) {
+  const type = binding.locator?.type || 'TOKEN_COLUMN'
+  binding.locator = type === 'LINE_PREFIX'
+    ? {type, prefix: '', tokenIndex: 0}
+    : type === 'LINE_SUFFIX'
+      ? {type, suffix: '', tokenIndex: 0}
+      : {type, columnIndex: 0, separator: 'WHITESPACE', header: false}
+  binding.expectedMatches = type === 'TOKEN_COLUMN' ? 'ALL_ROWS' : 1
+}
+function fileSourceLabel(value) { return FILE_TIME_SOURCES.find(item => item[0] === value)?.[1] || value }
+function fileModeLabel(value) { return FILE_CONTENT_MODES.find(item => item[0] === value)?.[1] || value }
 function findFirstField(content, fieldName) {
   try {
     const queue = [JSON.parse(content || '{}')]
@@ -751,7 +894,7 @@ function confirmDelete() {
           <div class="table-scroll"><table class="data-table"><thead><tr><th>报文字段路径</th><th>值来源</th><th>目标类型</th></tr></thead><tbody><tr v-for="binding in (selected.bindings || []).filter(item => item.kind === 'VALUE_RULE')" :key="binding.id"><td><code class="detail-path">{{ binding.path }}</code></td><td>{{ valueProviderLabel(binding.provider) }}</td><td><code class="detail-format">{{ binding.targetType || 'string' }}</code></td></tr></tbody></table></div>
         </DetailSection>
         <DetailSection v-if="selected.type === 'FILE'" title="文件生成配置" description="执行时改写源文件并生成带 SIM 标识的新文件">
-          <DetailGrid :columns="4"><div><dt>对象存储</dt><dd>{{ normalizeStorageType(selected.fileGeneration?.storageType) }}</dd></div><div><dt>原始文件</dt><dd>{{ selected.fileGeneration?.sourceFilePath || selected.fileGeneration?.sourceFileName || '读取报文 filePath' }}</dd></div><div><dt>时间字段</dt><dd>{{ selected.fileGeneration?.timeColumn || '预报时间' }}</dd></div><div><dt>时间格式</dt><dd><code class="detail-format">{{ selected.fileGeneration?.sourceTimeFormat || 'yyyy-MM-dd_HH:mm:ss' }}</code></dd></div></DetailGrid>
+          <DetailGrid :columns="4"><div><dt>文件存储</dt><dd>{{ normalizeStorageType(selected.fileGeneration?.storageType) }}</dd></div><div><dt>原始文件</dt><dd>{{ selected.fileGeneration?.sourceFilePath || selected.fileGeneration?.sourceFileName || '读取报文 filePath' }}</dd></div><div><dt>文件名时间</dt><dd>{{ selected.fileGeneration?.fileNameBindings?.length || 0 }} 项</dd></div><div><dt>内容时间</dt><dd>{{ selected.fileGeneration?.contentBindings?.length || (selected.fileGeneration?.timeColumn ? 1 : 0) }} 项</dd></div></DetailGrid>
         </DetailSection>
         <DetailSection title="默认投递目标" description="一次任务执行会分别向以下目标投递" :count="deliveryTargetsOf(selected).length">
           <div v-if="deliveryTargetsOf(selected).length" class="table-scroll"><table class="data-table"><thead><tr><th>MQ 实例</th><th>Producer Group</th><th>Topic</th></tr></thead><tbody><tr v-for="target in deliveryTargetsOf(selected)" :key="target.componentId"><td><b>{{ componentOf(target.componentId)?.name || target.componentId }}</b></td><td>{{ target.producerGroup || '未配置' }}</td><td>{{ target.topic || '未配置' }}</td></tr></tbody></table></div><div v-else class="inline-empty">尚未配置投递目标</div>
@@ -764,17 +907,16 @@ function confirmDelete() {
     </AppModal>
 
     <AppDetailPage v-if="canManage && dialog === 'edit' && selected" :title="`配置报文 · ${selected.name}`" :before-close="confirmEditorClose" @close="dialog = ''">
-      <section class="editor-status-strip"><div><StatusBadge :status="form.status || 'DRAFT'"/><span v-if="isEditorDirty" class="unsaved-indicator" role="status">未保存</span><span>关联 {{ referenceTasks.length }} 个任务 · {{ referenceTasks.filter(item => item.status === 'ENABLED').length }} 个已启用</span></div><button v-if="reviewIssues.length" class="issue-summary" @click="locateIssue(reviewIssues[0])">待完善 {{ reviewIssues.length }} 项 →</button><span v-else class="ready-summary">页面完整性检查通过</span></section>
+      <section class="editor-status-strip"><div><StatusBadge :status="form.status || 'DRAFT'"/><span v-if="isEditorDirty" class="unsaved-indicator" role="status">未保存</span><span>关联 {{ referenceTasks.length }} 个任务 · {{ referenceTasks.filter(item => item.status === 'ENABLED').length }} 个已启用</span></div><button class="issue-summary" :class="{ ready: !reviewIssues.length }" @click="inspectorOpen = true">{{ reviewIssues.length ? `待完善 ${reviewIssues.length} 项` : '配置检查通过' }} →</button></section>
       <p v-if="saveError" class="notice pre-generate-error" role="alert">{{ saveError }}</p>
       <template #header-actions><button v-if="selected.status !== 'PUBLISHED'" class="button primary" :disabled="isPending(`update:messages:${selected.id}`)" @click="publish">{{ isPending(`update:messages:${selected.id}`) ? '正在发布…' : '发布报文' }}</button></template>
       <div class="message-context"><div><b>{{ selected.name }}</b><small>{{ selected.type }} · {{ selected.description }}</small></div></div>
       <div v-if="selected.status === 'PUBLISHED' && isEditorDirty" class="published-edit-notice"><b>正在修改已发布报文</b><span>保存后形成待发布修改；当前已发布版本继续生效，重新发布后新配置才用于后续执行。</span></div>
       <div class="editor-workbench">
-      <aside class="editor-step-aside">
-        <div class="config-step-navigation"><span class="config-step-label">配置步骤</span><small>已完成 {{ completedTabCount }}/{{ configurationTabs.length }}</small></div>
-        <nav class="tabs" role="tablist" aria-label="报文配置步骤"><button v-for="(tab, index) in configurationTabs" :key="tab[0]" type="button" role="tab" :data-config-tab="tab[0]" :aria-controls="`config-panel-${tab[0]}`" :aria-selected="activeTab === tab[0]" :tabindex="activeTab === tab[0] ? 0 : -1" :class="{ active: activeTab === tab[0] }" @click="selectConfigurationTab(tab[0])" @keydown="handleConfigurationTabKey($event, tab[0])"><i>{{ index + 1 }}</i><span>{{ tab[1] }}</span><small v-if="tabIssueCount(tab[0])" class="tab-issue-count">{{ tabIssueCount(tab[0]) }}</small></button></nav>
-        <p class="editor-step-help">草稿允许暂存未完成配置，发布前需完成全部检查。</p>
-      </aside>
+      <header class="editor-step-header">
+        <div class="config-step-navigation"><span class="config-step-label">配置步骤</span><small>已完成 {{ completedTabCount }}/{{ configurationTabs.length }} · 草稿可暂存未完成配置</small></div>
+        <nav class="tabs" role="tablist" aria-label="报文配置步骤"><button v-for="(tab, index) in configurationTabs" :key="tab[0]" type="button" role="tab" :data-config-tab="tab[0]" :aria-controls="`config-panel-${tab[0]}`" :aria-selected="activeTab === tab[0]" :tabindex="activeTab === tab[0] ? 0 : -1" :class="{ active: activeTab === tab[0], complete: !tabIssueCount(tab[0]) }" @click="selectConfigurationTab(tab[0])" @keydown="handleConfigurationTabKey($event, tab[0])"><i>{{ index + 1 }}</i><span>{{ tab[1] }}</span><small v-if="tabIssueCount(tab[0])" class="tab-issue-count">{{ tabIssueCount(tab[0]) }}</small></button></nav>
+      </header>
       <div class="editor-main">
       <section v-if="activeTab === 'basic'" id="config-panel-basic" class="config-panel" role="tabpanel"><div class="card-heading"><div><h2>基本信息</h2><p>业务类型由报文本身定义，不再从数据项 is_rt 推断。</p></div></div><div class="form-grid"><label>报文名称<input v-model="form.name"></label><label>报文类型<select v-model="form.type"><option>JSON</option><option>FILE</option></select></label><label>业务类型<select v-model="form.businessType"><option value="UNKNOWN" disabled>请选择</option><option value="REALTIME">实况</option><option value="FORECAST">预报</option></select><small>按报文实际业务语义选择，与数据项配置解耦。</small></label><label>时间生成方式<select v-model="form.timeGenerationMode"><option value="TRIGGER_TIME">直接使用计划触发时间</option><option value="DATA_POLICY">按数据项策略对齐</option></select><small>{{ form.timeGenerationMode === 'TRIGGER_TIME' ? '业务基准时间与计划触发时间相同。' : '业务基准时间按起报点或数据间隔对齐。' }}</small></label><label>业务描述<input v-model="form.description"></label><label>默认编码<select v-model="form.encoding"><option>UTF-8</option><option>GBK</option></select></label></div></section>
       <section v-else-if="activeTab === 'content'" id="config-panel-content" class="config-panel" role="tabpanel"><div class="card-heading"><div><h2>报文内容</h2><p>使用 JSON 结构与变量占位符定义最终报文。</p></div><button class="button secondary" @click="formatContent">格式化 / 校验</button></div><textarea v-model="form.content" class="code-editor" spellcheck="false"></textarea><div class="button-row"><button class="button secondary" @click="editorPreview = true">查看原文</button></div></section>
@@ -784,35 +926,82 @@ function confirmDelete() {
         <section class="linkage-step element-step" :class="{ disabled: !form.dataBinding?.sourceCode }"><h3><span>3</span>选择要素项</h3><p>支持搜索、多选及全选当前结果。</p><label class="catalog-search">搜索要素项<input v-model="elementKeyword" :disabled="!form.dataBinding?.sourceCode" placeholder="要素编码或中文名称"></label><button class="select-all" type="button" :disabled="!elementOptions.length" @click="toggleAllElements">全选/取消当前结果 · 已选 {{ form.dataBinding?.elements?.length || 0 }} 项</button><div class="element-options"><label v-for="item in elementOptions" :key="item.id" :class="{ selected: isElementSelected(item) }"><input type="checkbox" :checked="isElementSelected(item)" @change="toggleElement(item)"><span><b>{{ item.code }} · {{ item.name || '未配置中文名称' }}</b><small>{{ item.unit || '无单位' }} · {{ item.dataFormat || '未配置格式' }}</small></span></label><div v-if="catalogLoading.elements" class="catalog-empty">正在加载…</div><div v-else-if="form.dataBinding?.sourceCode && !elementOptions.length" class="catalog-empty">没有匹配的要素项</div></div></section>
       </div><div class="binding-summary"><div><b>{{ form.dataBinding?.sourceCode || '未选择数据源' }} / {{ form.dataBinding?.dataItemCode || '未选择数据项' }}</b><small>{{ form.dataBinding?.sourceName || '—' }} · {{ form.dataBinding?.dataItemName || '—' }}</small><div class="selected-element-chips"><span v-for="element in form.dataBinding?.elements" :key="element.id">{{ element.code }} {{ element.name }}</span></div></div><strong>已选 {{ form.dataBinding?.elements?.length || 0 }} 个要素</strong></div></section>
       <section v-else-if="activeTab === 'file'" id="config-panel-file" class="config-panel file-template-panel" role="tabpanel">
-        <div class="card-heading"><div><h2>文件模板</h2><p>源文件由管理人员预先上传到对象存储；执行时按数据项时间间隔生成新文件，不覆盖源文件。</p></div><button class="button secondary" :disabled="fileInspecting" @click="inspectSourceFile">{{ fileInspecting ? '正在扫描…' : '扫描日期字段' }}</button></div>
-        <div class="file-generation-flow"><span>读取人工源文件</span><b>→</b><span>按计划触发时间改写</span><b>→</b><span>发布带 SIM 标识的新文件</span><b>→</b><span>回填外层报文</span></div>
-        <div class="form-grid">
-          <label>对象存储<select v-model="form.fileGeneration.storageType" @change="fileInspection = null"><option value="OSS">阿里云 OSS</option><option value="OBS">华为云 OBS</option></select><small>访问凭证、Endpoint 与 Bucket 由后端 Nacos 配置统一管理。</small></label>
-          <label>源文件对象路径（可选）<input v-model.trim="form.fileGeneration.sourceFilePath" placeholder="例如 forecast/source.csv"><small>可填写对象 Key 或对象完整 URL；留空时读取外层报文中的 filePath。</small></label>
-          <label>原始文件名（可选）<input v-model.trim="form.fileGeneration.sourceFileName" placeholder="例如 POLLUTION_SHORT_20250610.csv"><small>用于覆盖外层报文 fileName；未填写时自动从地址提取。</small></label>
-          <label>文件时间字段<input v-model.trim="form.fileGeneration.timeColumn" placeholder="例如 预报时间"><small>按表头精确匹配；同一时间的多条记录会保持一致。</small></label>
-          <label>原始时间格式<select v-model="form.fileGeneration.sourceTimeFormat"><option>yyyy-MM-dd_HH:mm:ss</option><option>yyyy-MM-dd HH:mm:ss</option><option>yyyy/MM/dd HH:mm:ss</option></select><small>样例 CSV 使用下划线格式。</small></label>
-          <label>字段分隔符<select v-model="form.fileGeneration.delimiter"><option value=",">逗号（CSV）</option><option value="TAB">制表符（TXT）</option><option value="|">竖线（TXT）</option><option value=";">分号</option></select><small>文件扩展名不决定解析方式，CSV/TXT 均按此配置读取。</small></label>
-        </div>
-        <div v-if="fileInspection" class="file-inspection-result"><div><span>已扫描</span><b>{{ fileInspection.scannedRows }} 行样本</b></div><button v-for="column in fileInspection.timeColumns" :key="column.columnName" type="button" :class="{ selected: form.fileGeneration.timeColumn === column.columnName }" @click="form.fileGeneration.timeColumn = column.columnName; form.fileGeneration.sourceTimeFormat = column.format"><span>{{ column.columnName }}</span><b>{{ column.sample }}</b><small>{{ column.format }}</small></button><p v-if="!fileInspection.timeColumns?.length">未发现支持的日期字段。</p></div>
-        <div class="notice"><b>时间规则：</b>文件第一个时间槽使用后端对齐后的业务基准时间，后续时间槽按所选数据项和数据源配置的时间间隔递增。后端从所选 OSS/OBS 下载源文件并将生成文件上传到同一对象目录；对象不存在时终止本次发送。</div>
+        <div class="card-heading"><div><h2>文件生成规则</h2><p>按样例结构配置一次。后续文件名可以变化，结构兼容时无需修改代码。</p></div><button class="button secondary" :disabled="fileInspecting || ['PASSTHROUGH', 'POSITIONAL_TEXT'].includes(form.fileGeneration.parserMode)" @click="inspectSourceFile">{{ form.fileGeneration.parserMode === 'PASSTHROUGH' ? '无需识别内容' : form.fileGeneration.parserMode === 'POSITIONAL_TEXT' ? '预生成时校验' : (fileInspecting ? '正在识别…' : '识别文件结构') }}</button></div>
+        <div class="file-rule-steps"><div class="active"><i>1</i><span><b>选择样例规则</b><small>复用已确认配置</small></span></div><div><i>2</i><span><b>识别文件结构</b><small>确认编码与字段</small></span></div><div><i>3</i><span><b>配置时间绑定</b><small>文件名与内容分开</small></span></div><div><i>4</i><span><b>预生成验证</b><small>执行前检查结果</small></span></div></div>
+
+        <section class="file-rule-section preset-section">
+          <div><span class="section-index">01</span><div><h3>样例规则</h3><p>已将确认过的通用、工研院及甘肃样例整理为可复用规则；定长文件保留为待确认。</p></div></div>
+          <div class="preset-picker"><select v-model="selectedFilePresetId"><option value="">选择样例规则模板</option><option v-for="preset in FILE_RULE_PRESETS" :key="preset.id" :value="preset.id" :disabled="!preset.enabled">{{ preset.id }} · {{ preset.name }}{{ preset.enabled ? '' : '（待确认）' }}</option></select><button class="button secondary" type="button" :disabled="!selectedFilePresetId" @click="applyFilePreset">应用规则</button></div>
+        </section>
+
+        <section class="file-rule-section">
+          <div><span class="section-index">02</span><div><h3>源文件与结构</h3><p>扩展名只决定输出文件类型，分隔符和编码按文件实际情况配置。</p></div></div>
+          <div class="form-grid file-source-grid">
+            <label>文件存储<select v-model="form.fileGeneration.storageType" @change="fileInspection = null"><option value="OSS">阿里云 OSS</option><option value="OBS">华为云 OBS</option><option value="HTTP">HTTP（Nginx）</option></select></label>
+            <label class="wide-field">源文件地址<input v-model.trim="form.fileGeneration.sourceFilePath" :placeholder="form.fileGeneration.storageType === 'HTTP' ? '例如 http://127.0.0.1:8088/files/source.csv' : '例如 forecast/source.csv'"><small>留空时读取外层报文中的 filePath。</small></label>
+            <label>原始文件名<input v-model.trim="form.fileGeneration.sourceFileName" placeholder="从地址自动提取"><small>可填写纠正后的业务文件名。</small></label>
+            <label>处理方式<select v-model="form.fileGeneration.parserMode" @change="changeFileParserMode"><option value="PASSTHROUGH">仅替换文件名（内容原样复制）</option><option value="DELIMITED">表格 / 分隔文本</option><option value="KEY_VALUE">键值文本</option><option value="POSITIONAL_TEXT">无表头文本定位</option><option value="FIXED_WIDTH" disabled>定长文本（待确认）</option></select><small>{{ form.fileGeneration.parserMode === 'PASSTHROUGH' ? '不解析编码、分隔符或文件内容。' : form.fileGeneration.parserMode === 'POSITIONAL_TEXT' ? '按行标记或无表头列定位，只替换时间文本。' : '解析文件并按内容绑定改写。' }}</small></label>
+            <label>字符编码<select v-model="form.fileGeneration.encoding" :disabled="form.fileGeneration.parserMode === 'PASSTHROUGH'"><option value="AUTO">自动识别</option><option value="UTF-8">UTF-8</option><option value="GB18030">GB18030</option></select></label>
+            <label>字段分隔符<select v-model="form.fileGeneration.delimiter" :disabled="form.fileGeneration.parserMode !== 'DELIMITED'"><option value="AUTO">自动识别</option><option value=",">逗号</option><option value="TAB">制表符</option><option value="|">竖线</option><option value=";">分号</option></select></label>
+          </div>
+          <div v-if="fileInspection" class="file-inspection-result"><div><span>结构识别完成</span><b>{{ fileInspection.scannedRows }} 行样本</b><small>{{ fileInspection.encoding || form.fileGeneration.encoding }} · {{ fileInspection.delimiter || form.fileGeneration.delimiter }}</small></div><button v-for="column in fileInspection.timeColumns" :key="column.columnName" type="button" :class="{ selected: form.fileGeneration.contentBindings.some(binding => binding.fields?.includes(column.columnName)) }" @click="addDetectedContentBinding(column)"><span>{{ column.columnName }}</span><b>{{ column.sample }}</b><small>{{ column.format }} · 点击加入绑定</small></button><p v-if="!fileInspection.timeColumns?.length">未发现完整日期字段，可使用组合字段或键值规则。</p></div>
+        </section>
+
+        <section class="file-rule-section">
+          <div><span class="section-index">03</span><div><h3>文件名时间</h3><p>按时间片段序号定位，文件名前缀变化不会影响替换。</p></div><button class="link-button" type="button" @click="addFileNameBinding">添加文件名时间</button></div>
+          <div v-if="form.fileGeneration.fileNameBindings.length" class="file-rule-list"><article v-for="(binding, index) in form.fileGeneration.fileNameBindings" :key="index"><span class="rule-kind">第 {{ binding.index + 1 }} 个时间</span><label>格式<input v-model.trim="binding.format" placeholder="yyyyMMddHH"></label><label>替换来源<select v-model="binding.source"><option v-for="source in FILE_TIME_SOURCES" :key="source[0]" :value="source[0]">{{ source[1] }}</option></select></label><small>{{ fileSourceLabel(binding.source) }}</small><button class="link-button danger-text" type="button" @click="removeFileNameBinding(index)">删除</button></article></div>
+          <div v-else class="file-rule-empty">未配置文件名时间。生成文件将保持原文件名。</div>
+        </section>
+
+        <section class="file-rule-section" :class="{ passthrough: form.fileGeneration.parserMode === 'PASSTHROUGH' }">
+          <div><span class="section-index">04</span><div><h3>文件内容时间</h3><p>{{ form.fileGeneration.parserMode === 'PASSTHROUGH' ? '当前使用原样复制，系统不会读取或改写文件内容。' : form.fileGeneration.parserMode === 'POSITIONAL_TEXT' ? '通过行前缀、行后缀或无表头列定位；保留原文件空白、列宽和换行。' : '每种文件独立绑定字段；支持多个时间列和年月日组合字段。' }}</p></div><button v-if="form.fileGeneration.parserMode !== 'PASSTHROUGH'" class="link-button" type="button" @click="addContentBinding">添加内容绑定</button></div>
+          <div v-if="form.fileGeneration.contentBindings.length" class="file-rule-list content-rule-list" :class="{'positional-rule-list': form.fileGeneration.parserMode === 'POSITIONAL_TEXT'}"><article v-for="(binding, index) in form.fileGeneration.contentBindings" :key="index"><span class="rule-kind">{{ fileModeLabel(binding.mode) }}</span><template v-if="form.fileGeneration.parserMode === 'POSITIONAL_TEXT'"><label>定位方式<select v-model="binding.locator.type" @change="changePositionalLocator(binding)"><option value="TOKEN_COLUMN">无表头列</option><option value="LINE_PREFIX">行前缀</option><option value="LINE_SUFFIX">行后缀</option></select></label><label v-if="binding.locator.type === 'LINE_PREFIX'">行前缀<input v-model.trim="binding.locator.prefix" placeholder="例如 SPCC"></label><label v-if="binding.locator.type === 'LINE_SUFFIX'">行后缀<input v-model.trim="binding.locator.suffix" placeholder="例如 时兰州区域中心订正预报"></label><label v-if="binding.locator.type === 'TOKEN_COLUMN'">列序号（从 0 开始）<input v-model.number="binding.locator.columnIndex" type="number" min="0"></label><label v-else>字段序号（从 0 开始）<input v-model.number="binding.locator.tokenIndex" type="number" min="0"></label><label v-if="binding.locator.type === 'TOKEN_COLUMN'">列分隔<select v-model="binding.locator.separator"><option value="WHITESPACE">任意空白</option><option value="TAB">制表符</option></select></label><label>替换方式<select v-model="binding.mode"><option value="SET">设置为指定时间</option><option value="SHIFT_BY_FILENAME_DELTA">按文件名时间差平移</option></select></label><label>时间格式<input v-model.trim="binding.format" placeholder="yyyyMMddHHmm"></label><label v-if="binding.mode === 'SET'">时间来源<select v-model="binding.source"><option v-for="source in FILE_TIME_SOURCES.filter(item => item[0] !== 'PRESERVE_OFFSET')" :key="source[0]" :value="source[0]">{{ source[1] }}</option></select></label><label v-else>参考文件名时间<select v-model.number="binding.referenceFileNameTimeIndex"><option v-for="item in form.fileGeneration.fileNameBindings" :key="item.index" :value="item.index">第 {{ Number(item.index) + 1 }} 个 · {{ item.format }}</option></select></label><small>{{ binding.expectedMatches === 'ALL_ROWS' ? '校验每个非空行均命中' : `校验命中 ${binding.expectedMatches || 1} 处` }}</small></template><template v-else><label>字段<input :value="binding.fields?.join(', ')" placeholder="多个字段用逗号分隔" @input="binding.fields = $event.target.value.split(',').map(value => value.trim()).filter(Boolean)"></label><label>替换方式<select v-model="binding.mode"><option v-for="mode in FILE_CONTENT_MODES.filter(item => item[0] !== 'SHIFT_BY_FILENAME_DELTA')" :key="mode[0]" :value="mode[0]">{{ mode[1] }}</option></select></label><label v-if="binding.mode !== 'COMPOSITE'">时间格式<input v-model.trim="binding.format" placeholder="yyyyMMddHHmmss"></label><label v-if="binding.mode === 'DERIVED'">偏移分钟<input v-model.number="binding.offsetMinutes" type="number"></label></template><button class="link-button danger-text" type="button" @click="removeContentBinding(index)">删除</button></article></div>
+          <div v-else class="file-rule-empty">{{ form.fileGeneration.parserMode === 'PASSTHROUGH' ? '文件将按字节原样复制，只生成新文件名。' : '未配置内容替换。执行时不会替换文件中的字段值。' }}</div>
+        </section>
+        <div class="notice"><b>生成规则：</b>{{ form.fileGeneration.parserMode === 'PASSTHROUGH' ? '源文件内容按字节复制，仅替换文件名和外层报文中的文件引用；' : '只替换已配置的时间片段和字段；' }}不追加 SIM 或 Execution ID，同名目标允许覆盖。</div>
       </section>
       <section v-else-if="activeTab === 'bindings'" id="config-panel-bindings" class="config-panel time-binding-panel" role="tabpanel">
-        <div class="card-heading"><div><h2>时间规则</h2><p>系统只校验已启用规则实际依赖的时间参数；未勾选字段保持原值。</p></div><button class="button secondary" :disabled="!detectedTimeFields.length" @click="bindAllTimeFields">应用推荐规则</button></div>
-        <div class="time-binding-guide"><div><span>调度输入</span><b>计划触发时间</b></div><div><span>业务起点</span><b>实况准点 / 预报起报点</b></div><div><span>数据间隔</span><b>读取 period_interval</b></div><div><span>结束时间</span><b>读取 period</b></div><strong>已配置 {{ configuredTimeBindingCount }} / {{ detectedTimeFields.length }}</strong></div>
-        <div v-if="!detectedTimeFields.length" class="notice">未识别到 yyyy-MM-dd HH:mm:ss 或 yyyy/MM/dd HH:mm:ss 日期字段，请先检查报文内容。</div>
-        <div v-else class="table-scroll"><table class="data-table time-binding-table"><thead><tr><th class="binding-check"><label class="binding-select-all"><input type="checkbox" :checked="allTimeFieldsSelected" :indeterminate="someTimeFieldsSelected && !allTimeFieldsSelected" aria-label="全选时间字段替换" @change="toggleAllTimeBindings"><span>替换</span></label></th><th>字段</th><th>报文路径</th><th>当前示例值</th><th>生成规则</th></tr></thead><tbody><tr v-for="field in detectedTimeFields" :key="field.path" :class="{ active: timeBindingOf(field.path) }"><td><input type="checkbox" :checked="Boolean(timeBindingOf(field.path))" :aria-label="`绑定 ${field.field}`" @change="toggleTimeBinding(field)"></td><td><b>{{ field.field }}</b><small>{{ field.format }}</small></td><td><code>{{ field.path }}</code></td><td>{{ field.sample }}</td><td><div class="time-strategy-control" :class="{ disabled: !timeBindingOf(field.path) }"><b>{{ timeStrategyLabelForField(field) }}</b><select class="time-strategy-select" :disabled="!timeBindingOf(field.path)" :value="timeBindingOf(field.path)?.strategy || ''" :aria-label="`${field.field} 生成规则`" @change="updateTimeStrategy(field, $event.target.value)"><option v-for="strategy in timeStrategiesForPath(field.path)" :key="strategy[0]" :value="strategy[0]">{{ strategy[1] }}</option></select></div></td></tr></tbody></table></div>
-        <p class="binding-help">“业务基准时间”会将实况对齐到最近准点、将预报对齐到最近起报点；“按数据项间隔生成”从该基准按 <code>period_interval</code> 递增；“预报结束时间”使用业务基准时间加 <code>period</code>。指定时间执行仅覆盖本次计划触发时间。</p>
-        <div class="binding-section-heading"><div><h2>系统值绑定</h2><p>选择任意 JSON 字段及执行值来源；后端不推断字段名称，也不生成业务随机值。</p></div></div>
-        <div class="value-binding-editor">
-          <label>报文字段<select v-model="valueBindingDraft.path"><option value="">请选择 JSON 字段</option><option v-for="field in detectedScalarFields" :key="field.path" :value="field.path">{{ field.path }} · {{ String(field.sample ?? '') }}</option></select></label>
-          <label>值来源<select v-model="valueBindingDraft.provider"><option v-for="provider in valueProviders" :key="provider[0]" :value="provider[0]">{{ provider[1] }}</option></select></label>
-          <label>目标类型<select v-model="valueBindingDraft.targetType"><option>string</option><option>integer</option><option>number</option><option>boolean</option><option>json</option></select></label>
-          <label v-if="valueBindingDraft.provider === 'CONSTANT'">常量值<input v-model="valueBindingDraft.value" placeholder="输入固定值"></label>
-          <label v-else-if="['PLANNED_TRIGGER_TIME', 'BUSINESS_BASE_TIME', 'PERIOD_END_TIME'].includes(valueBindingDraft.provider)">时间格式<select v-model="valueBindingDraft.format"><option>yyyy-MM-dd HH:mm:ss</option><option>yyyy/MM/dd HH:mm:ss</option></select></label>
-          <button class="button primary" type="button" @click="addValueBinding">添加绑定</button>
-        </div>
-        <div class="table-scroll"><table class="data-table value-binding-table"><thead><tr><th>报文字段路径</th><th>值来源</th><th>目标类型</th><th>配置值</th><th class="align-right">操作</th></tr></thead><tbody><tr v-for="binding in valueRuleBindings" :key="binding.id"><td><code>{{ binding.path }}</code></td><td>{{ valueProviderLabel(binding.provider) }}</td><td>{{ binding.targetType || 'string' }}</td><td>{{ binding.provider === 'CONSTANT' ? binding.value : (binding.format || '—') }}</td><td class="align-right"><button class="link-button danger-text" type="button" @click="removeValueBinding(binding.id)">删除</button></td></tr><tr v-if="!valueRuleBindings.length"><td colspan="5" class="empty-state">暂无系统值绑定。消息 ID 等执行值不会自动猜测，请按实际报文字段配置。</td></tr></tbody></table></div>
+        <div class="binding-page-heading"><div><h2>变量绑定</h2><p>明确每个报文字段在执行时如何生成；没有启用的字段保持模板原值。</p></div><div class="button-row compact"><button class="button secondary" type="button" @click="editorPreview = true">查看模板原文</button><button class="button secondary" type="button" @click="openBindingPreview">预览绑定结果</button></div></div>
+        <nav class="binding-section-tabs" role="tablist" aria-label="变量绑定类型">
+          <button type="button" role="tab" :aria-selected="bindingSection === 'time'" :class="{ active: bindingSection === 'time' }" @click="bindingSection = 'time'; bindingKeyword = ''"><span>时间字段</span><b>{{ configuredTimeBindingCount }}/{{ detectedTimeFields.length }}</b></button>
+          <button type="button" role="tab" :aria-selected="bindingSection === 'value'" :class="{ active: bindingSection === 'value' }" @click="bindingSection = 'value'; bindingKeyword = ''"><span>系统字段</span><b>{{ valueRuleBindings.length }}</b></button>
+        </nav>
+
+        <section v-if="bindingSection === 'time'" class="binding-workspace" aria-label="时间字段绑定">
+          <div class="binding-toolbar">
+            <SearchInput v-model="bindingKeyword" aria-label="搜索时间字段" placeholder="搜索字段名称、JSONPath 或示例值" />
+            <div class="binding-filter" role="group" aria-label="时间字段筛选"><button v-for="item in [['ALL','全部'],['ACTIVE','已启用'],['INACTIVE','保持原值']]" :key="item[0]" type="button" :aria-pressed="bindingFilter === item[0]" :class="{ active: bindingFilter === item[0] }" @click="bindingFilter = item[0]">{{ item[1] }}</button></div>
+            <label class="binding-select-all"><input type="checkbox" :checked="allTimeFieldsSelected" :indeterminate="someTimeFieldsSelected && !allTimeFieldsSelected" aria-label="全选时间字段替换" @change="toggleAllTimeBindings"><span>{{ allTimeFieldsSelected ? '取消全选' : '全选' }}</span></label>
+            <button class="button secondary" type="button" :disabled="!detectedTimeFields.length" @click="bindAllTimeFields">应用推荐规则</button>
+          </div>
+          <div class="time-rule-context"><div><span>计划触发时间</span><b>调度输入</b></div><i>→</i><div><span>业务基准时间</span><b>{{ form.timeGenerationMode === 'TRIGGER_TIME' ? '直接使用触发时间' : '按数据项策略对齐' }}</b></div><i>→</i><div><span>字段生成结果</span><b>按下方启用规则替换</b></div></div>
+          <div v-if="!detectedTimeFields.length" class="binding-empty">没有识别到日期时间字段。请先在“报文内容”中填写支持的日期格式。</div>
+          <div v-else-if="!visibleTimeFields.length" class="binding-empty">当前筛选条件下没有字段。</div>
+          <div v-else class="mapping-list">
+            <article v-for="field in visibleTimeFields" :key="field.path" class="mapping-row" :class="{ active: timeBindingOf(field.path) }">
+              <label class="mapping-toggle"><input type="checkbox" :checked="Boolean(timeBindingOf(field.path))" :aria-label="`绑定 ${field.field}`" @change="toggleTimeBinding(field)"><span></span></label>
+              <div class="mapping-field"><div><b>{{ field.field }}</b><em>{{ timeBindingOf(field.path) ? '已启用' : '保持原值' }}</em></div><button type="button" title="复制字段路径" @click="copyBindingPath(field.path)"><code>{{ field.path }}</code><span>复制</span></button><small>当前值：{{ field.sample }} · {{ field.format }}</small></div>
+              <div class="mapping-arrow">→</div>
+              <div class="mapping-rule" :class="{ disabled: !timeBindingOf(field.path) }"><label>生成方式<select :disabled="!timeBindingOf(field.path)" :value="timeBindingOf(field.path)?.strategy || ''" :aria-label="`${field.field} 生成规则`" @change="updateTimeStrategy(field, $event.target.value)"><option v-for="strategy in timeStrategiesForPath(field.path)" :key="strategy[0]" :value="strategy[0]">{{ strategy[1] }}</option></select></label><small>{{ timeBindingOf(field.path) ? timeStrategyDescription(timeBindingOf(field.path)?.strategy) : '执行时不会修改模板中的当前值' }}</small></div>
+            </article>
+          </div>
+          <p class="binding-help">只校验已启用规则实际依赖的时间参数。“按数据项间隔生成”读取 <code>period_interval</code>，“预报结束时间”读取 <code>period</code>。</p>
+        </section>
+
+        <section v-else class="binding-workspace" aria-label="系统字段绑定">
+          <div class="system-binding-heading"><div><h3>系统字段绑定</h3><p>将消息 ID、执行时间或固定值写入指定报文字段。</p></div><button class="button primary" type="button" @click="openValueBindingEditor()">添加绑定</button></div>
+          <div class="binding-toolbar system-toolbar"><SearchInput v-model="bindingKeyword" aria-label="搜索系统字段绑定" placeholder="搜索字段路径、值来源或配置值" /><span>已配置 {{ valueRuleBindings.length }} 项</span></div>
+          <div v-if="valueRuleBindings.filter(binding => !bindingKeyword || [binding.path, valueProviderLabel(binding.provider), binding.value, binding.format].some(value => String(value || '').toLowerCase().includes(bindingKeyword.toLowerCase()))).length" class="mapping-list system-mapping-list">
+            <article v-for="binding in valueRuleBindings.filter(binding => !bindingKeyword || [binding.path, valueProviderLabel(binding.provider), binding.value, binding.format].some(value => String(value || '').toLowerCase().includes(bindingKeyword.toLowerCase())))" :key="binding.id" class="mapping-row active">
+              <div class="mapping-kind">{{ binding.provider === 'MESSAGE_ID' ? 'ID' : 'SYS' }}</div>
+              <div class="mapping-field"><div><b>{{ binding.path.split('.').pop() }}</b><em v-if="binding.provider === 'MESSAGE_ID'">推荐</em></div><button type="button" title="复制字段路径" @click="copyBindingPath(binding.path)"><code>{{ binding.path }}</code><span>复制</span></button><small>输出类型：{{ binding.targetType || 'string' }}</small></div>
+              <div class="mapping-arrow">→</div>
+              <div class="mapping-rule"><span>值来源</span><b>{{ valueProviderLabel(binding.provider) }}</b><small>{{ binding.provider === 'CONSTANT' ? `固定值：${binding.value}` : (binding.format || '每次执行自动生成') }}</small></div>
+              <button class="button secondary mapping-edit" type="button" @click="openValueBindingEditor(binding)">编辑</button>
+            </article>
+          </div>
+          <div v-else class="binding-empty">{{ bindingKeyword ? '没有匹配的系统字段绑定。' : '还没有系统字段绑定。点击“添加绑定”选择报文字段和值来源。' }}</div>
+        </section>
       </section>
       <section v-else id="config-panel-target" class="config-panel" role="tabpanel">
         <div class="card-heading"><div><h2>默认投递目标</h2><p>每个 MQ 实例分别维护自己的 Producer Group 和 Topic，多个实例不会合并路由选项。</p></div><button class="button secondary" :disabled="!hasCompleteTargets() || targetValidationPending" @click="validateTargets">{{ targetValidationPending ? '正在验证…' : '验证全部实例' }}</button></div>
@@ -834,14 +1023,33 @@ function confirmDelete() {
         <div class="notice"><b>执行规则：</b>一次任务执行会向每个已选 MQ 目标各发送一条报文；每条投递独立记录成功或失败，互不覆盖。</div>
       </section>
       </div>
-      <aside class="editor-inspector" aria-label="配置检查">
-        <div class="inspector-heading"><span>配置检查</span><b :class="{ ready: !reviewIssues.length }">{{ reviewIssues.length ? `${reviewIssues.length} 项待完善` : '可以发布' }}</b></div>
-        <dl class="inspector-facts"><div><dt>编辑状态</dt><dd>{{ isEditorDirty ? '有未保存修改' : '已保存' }}</dd></div><div><dt>当前版本</dt><dd>{{ form.status === 'PUBLISHED' ? '已发布' : '草稿' }}</dd></div><div><dt>关联任务</dt><dd>{{ referenceTasks.length }} 个</dd></div></dl>
+      </div>
+      <AppDrawer v-if="inspectorOpen" title="配置检查" description="发布前逐项确认报文内容、数据关联、变量规则和投递目标。" @close="inspectorOpen = false">
+        <div class="drawer-status" :class="{ ready: !reviewIssues.length }"><b>{{ reviewIssues.length ? `${reviewIssues.length} 项待完善` : '可以发布' }}</b><span>{{ isEditorDirty ? '当前有未保存修改' : '当前修改已保存' }}</span></div>
+        <dl class="inspector-facts"><div><dt>当前版本</dt><dd>{{ form.status === 'PUBLISHED' ? '已发布' : '草稿' }}</dd></div><div><dt>已完成步骤</dt><dd>{{ completedTabCount }}/{{ configurationTabs.length }}</dd></div><div><dt>关联任务</dt><dd>{{ referenceTasks.length }} 个</dd></div></dl>
         <div v-if="reviewIssues.length" class="inspector-issues"><button v-for="issue in reviewIssues" :key="`${issue.tab}-${issue.message}`" type="button" @click="locateIssue(issue)"><span>{{ configurationTabs.find(tab => tab[0] === issue.tab)?.[1] }}</span><b>{{ issue.message }}</b><i>→</i></button></div>
         <div v-else class="inspector-ready"><b>页面配置完整</b><span>仍请在发布前核对业务内容和投递目标。</span></div>
-      </aside>
-      </div>
-      <template #footer><span class="save-hint">{{ changedSections.length ? `已修改：${changedSections.join('、')}` : '当前没有未保存修改' }}</span><button class="button primary" :disabled="(activeTab === 'data' && !hasCompleteDataBinding()) || isPending(`update:messages:${selected.id}`)" @click="saveCurrentTab">{{ isPending(`update:messages:${selected.id}`) ? '正在保存…' : '保存草稿' }}</button></template>
+        <template #footer><button class="button secondary" type="button" @click="inspectorOpen = false">关闭</button></template>
+      </AppDrawer>
+      <AppDrawer v-if="valueBindingEditorOpen" :title="editingValueBindingId ? '编辑系统字段绑定' : '添加系统字段绑定'" description="选择报文字段，并指定执行时写入该字段的值。" wide @close="valueBindingEditorOpen = false">
+        <div class="drawer-form">
+          <label>搜索报文字段<input v-model="valueFieldKeyword" placeholder="字段名称、JSONPath 或当前值"></label>
+          <fieldset class="field-picker"><legend>报文字段</legend><label v-for="field in drawerScalarFields" :key="field.path" :class="{ selected: valueBindingDraft.path === field.path, bound: valueRuleBindings.some(binding => binding.path === field.path && binding.id !== editingValueBindingId) }"><input v-model="valueBindingDraft.path" type="radio" :value="field.path" :disabled="valueRuleBindings.some(binding => binding.path === field.path && binding.id !== editingValueBindingId)"><span><b>{{ field.field }}</b><code>{{ field.path }}</code><small>{{ valueRuleBindings.some(binding => binding.path === field.path && binding.id !== editingValueBindingId) ? '已配置绑定' : `当前值：${String(field.sample ?? '')}` }}</small></span></label><p v-if="!drawerScalarFields.length">没有匹配的报文字段。</p></fieldset>
+          <label>值来源<select v-model="valueBindingDraft.provider"><option v-for="provider in valueProviders" :key="provider[0]" :value="provider[0]">{{ provider[1] }}</option></select></label>
+          <label>输出类型<select v-model="valueBindingDraft.targetType"><option>string</option><option>integer</option><option>number</option><option>boolean</option><option>json</option></select></label>
+          <label v-if="valueBindingDraft.provider === 'CONSTANT'">固定值<input v-model="valueBindingDraft.value" placeholder="输入固定值"></label>
+          <label v-else-if="['PLANNED_TRIGGER_TIME', 'BUSINESS_BASE_TIME', 'PERIOD_END_TIME'].includes(valueBindingDraft.provider)">时间格式<select v-model="valueBindingDraft.format"><option>yyyy-MM-dd HH:mm:ss</option><option>yyyy/MM/dd HH:mm:ss</option></select></label>
+          <div class="binding-result-summary"><span>绑定结果</span><b>{{ valueBindingDraft.path || '尚未选择字段' }}</b><small>{{ valueProviderLabel(valueBindingDraft.provider) }} → {{ valueBindingDraft.targetType }}</small></div>
+        </div>
+        <template #footer><button v-if="editingValueBindingId" class="button danger" type="button" @click="removeValueBinding(editingValueBindingId)">删除绑定</button><span class="drawer-footer-spacer"></span><button class="button secondary" type="button" @click="valueBindingEditorOpen = false">取消</button><button class="button primary" type="button" @click="saveValueBinding">{{ editingValueBindingId ? '保存修改' : '添加绑定' }}</button></template>
+      </AppDrawer>
+      <AppDrawer v-if="bindingPreviewOpen" title="预览绑定结果" description="基于当前未保存配置生成，仅用于检查字段替换，不会投递或保存。" wide @close="bindingPreviewOpen = false">
+        <div class="binding-preview-settings"><label>计划触发时间<input v-model="bindingPreviewTime" type="datetime-local" step="1"></label><button class="button primary" type="button" @click="runBindingPreview">重新生成</button></div>
+        <p v-if="bindingPreviewError" class="notice pre-generate-error" role="alert">{{ bindingPreviewError }}</p>
+        <template v-else-if="bindingPreview"><div class="binding-preview-summary"><div><span>已替换</span><b>{{ bindingPreview.replacementCount }} 个字段</b></div><div><span>未启用时间字段</span><b>{{ detectedTimeFields.length - configuredTimeBindingCount }} 个</b></div><div><span>存在问题</span><b :class="{ warning: bindingPreview.warnings.length }">{{ bindingPreview.warnings.length }} 项</b></div></div><div v-if="bindingPreview.replacedPaths.length" class="replaced-paths"><span>本次替换</span><code v-for="path in bindingPreview.replacedPaths" :key="path">{{ path }}</code></div><div v-if="bindingPreview.warnings.length" class="notice warning-notice">{{ bindingPreview.warnings.join('；') }}</div><pre class="code-block binding-preview-code">{{ bindingPreview.content }}</pre></template>
+        <template #footer><button class="button secondary" type="button" @click="bindingPreviewOpen = false">关闭</button></template>
+      </AppDrawer>
+      <template #footer><span class="save-hint">{{ changedSections.length ? `已修改：${changedSections.join('、')}` : '当前没有未保存修改' }}</span><button v-if="hasPreviousTab" class="button secondary" type="button" @click="moveConfigurationTab(-1)">上一步</button><button class="button secondary" :disabled="(activeTab === 'data' && !hasCompleteDataBinding()) || isPending(`update:messages:${selected.id}`)" @click="saveCurrentTab">{{ isPending(`update:messages:${selected.id}`) ? '正在保存…' : '保存草稿' }}</button><button v-if="hasNextTab" class="button primary" :disabled="(activeTab === 'data' && !hasCompleteDataBinding()) || isPending(`update:messages:${selected.id}`)" @click="saveAndNext">保存并下一步</button></template>
     </AppDetailPage>
 
     <AppDetailPage v-if="canManage && dialog === 'create'" title="新建报文" :before-close="confirmEditorClose" @close="dialog = ''"><p class="muted">先明确报文业务语义和时间基准，再进入数据关联与变量绑定。</p><div class="form-grid"><label>报文名称（必填）<input v-model="createForm.name" autofocus placeholder="例如 weather_station_message" @input="createError = ''"></label><label>报文类型（必填）<select v-model="createForm.type"><option value="JSON">JSON 报文</option><option value="FILE">FILE 报文</option></select></label><label>业务类型（必填）<select v-model="createForm.businessType"><option value="REALTIME">实况</option><option value="FORECAST">预报</option></select></label><label>时间生成方式（必填）<select v-model="createForm.timeGenerationMode"><option value="TRIGGER_TIME">直接使用计划触发时间</option><option value="DATA_POLICY">按数据项策略对齐</option></select></label><label>业务描述<input v-model="createForm.description" placeholder="简要说明报文用途"></label></div><div class="notice">只有实际使用数据间隔、预报结束时间等绑定时，后端才校验对应的数据项时间参数。</div><p v-if="createError" class="status-badge negative">{{ createError }}</p><template #footer><button class="button secondary" @click="confirmEditorClose() && (dialog = '')">取消</button><button class="button primary" :disabled="isPending('create:messages')" @click="submitCreate">{{ isPending('create:messages') ? '正在创建…' : '创建并关联数据' }}</button></template></AppDetailPage>
@@ -945,22 +1153,24 @@ body .page .message-detail .data-table td { padding: 15px 14px; color: #4d5f77; 
 body .page .message-detail .detail-path { color: #2c486d; font: 600 14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
 body .page .message-detail .detail-format { color: #5c6d84; font: 500 14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
 .message-context { display: flex; align-items: flex-start; justify-content: space-between; padding: 0 0 14px; }.message-context b { font-size: 17px; }.message-context small { display: block; margin-top: 4px; color: var(--muted); font-size: var(--type-form-label); }
-.editor-workbench { display: grid; grid-template-columns: 188px minmax(0, 1fr) 248px; align-items: start; gap: 14px; }
-.editor-step-aside, .editor-inspector { position: sticky; top: 12px; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+.editor-workbench { display: grid; min-width: 0; gap: 14px; }
+.editor-step-header { overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
 .config-step-navigation { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 13px 14px; border-bottom: 1px solid var(--line); background: #fafbfd; }
 .config-step-label { color: #526078; font-size: var(--type-form-label); font-weight: 700; }
 .config-step-navigation small { color: var(--muted); font-size: 11px; }
 .unsaved-indicator { display: inline-flex; align-items: center; gap: 6px; color: var(--amber); font-size: var(--type-form-label); font-weight: 650; }.unsaved-indicator::before { width: 6px; height: 6px; border-radius: 50%; background: currentColor; content: ''; }
-.editor-step-aside .tabs { display: grid; margin: 0; overflow: visible; border: 0; }
-.editor-step-aside .tabs button { display: grid; min-height: 46px; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 9px 12px; border: 0; border-left: 3px solid transparent; border-radius: 0; color: #5f6f85; font-size: var(--type-form-body); font-weight: 600; text-align: left; }
-.editor-step-aside .tabs button:hover { background: #f5f8ff; }
-.editor-step-aside .tabs button.active { border-left-color: var(--blue); background: var(--blue-soft); color: var(--management-link); }
-.editor-step-aside .tabs button > i { display: grid; width: 22px; height: 22px; place-items: center; border: 1px solid #d9e0ea; border-radius: 50%; background: #fff; color: #77869a; font: normal 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
-.editor-step-aside .tabs button.active > i { border-color: #91caff; color: var(--blue); }
+.editor-step-header .tabs { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); margin: 0; overflow: visible; border: 0; }
+.editor-step-header .tabs button { position: relative; display: grid; min-height: 58px; grid-template-columns: 25px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 10px 14px; border: 0; border-right: 1px solid var(--line); border-bottom: 3px solid transparent; border-radius: 0; background: #fff; color: #5f6f85; font-size: var(--type-form-body); font-weight: 600; text-align: left; }
+.editor-step-header .tabs button:last-child { border-right: 0; }
+.editor-step-header .tabs button:hover { background: #f5f8ff; }
+.editor-step-header .tabs button.active { border-bottom-color: var(--blue); background: var(--blue-soft); color: var(--management-link); }
+.editor-step-header .tabs button > i { display: grid; width: 24px; height: 24px; place-items: center; border: 1px solid #d9e0ea; border-radius: 50%; background: #fff; color: #77869a; font: normal 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.editor-step-header .tabs button.complete > i { border-color: #b7eb8f; background: var(--green-soft); color: var(--green); }
+.editor-step-header .tabs button.active > i { border-color: #91caff; color: var(--blue); }
 .tab-issue-count { display: inline-grid; min-width: 18px; height: 18px; place-items: center; border-radius: 9px; background: var(--red); color: #fff; font-size: 10px; }
-.editor-step-help { margin: 0; padding: 12px 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; line-height: 1.6; }
 .editor-main { min-width: 0; }
 .config-panel { min-height: 420px; padding: 18px; border: 1px solid #f0f0f0; border-radius: 8px; background: #fff; }
+.issue-summary.ready { background: var(--green-soft); color: var(--green); }
 .inspector-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 13px 14px; border-bottom: 1px solid var(--line); background: #fafbfd; }
 .inspector-heading span { color: #526078; font-size: var(--type-form-label); font-weight: 700; }
 .inspector-heading b { color: var(--amber); font-size: 12px; }
@@ -985,16 +1195,36 @@ body .page .message-detail .detail-format { color: #5c6d84; font: 500 14px/1.55 
 .target-tabs-label { margin-bottom: -11px; color: #526078; font-size: var(--type-form-label); font-weight: 650; }
 .target-tabs { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; border-bottom: 1px solid var(--line); }.target-tabs button { min-width: 210px; padding: 10px 13px; border: 1px solid var(--line); border-bottom: 2px solid transparent; border-radius: var(--radius-sm) var(--radius-sm) 0 0; background: #f7f9fc; color: var(--text); text-align: left; }.target-tabs button:hover { border-color: #a9bcf5; }.target-tabs button.active { border-color: #a9bcf5; border-bottom-color: var(--blue); background: var(--blue-soft); color: var(--ink); }.target-tabs span, .target-tabs small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.target-tabs span { font-size: var(--type-form-body); font-weight: 650; }.target-tabs small { margin-top: 4px; color: var(--muted); font-size: var(--type-form-label); }.target-editor { padding: 16px; border: 1px solid #a9bcf5; border-radius: var(--radius-md); background: #f8faff; }.target-editor-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }.target-editor-heading b, .target-editor-heading small { display: block; }.target-editor-heading b { color: var(--ink); font-size: 15px; }.target-editor-heading small { margin-top: 3px; color: var(--muted); font-size: var(--type-form-label); }.target-editor-heading > span { padding: 4px 8px; border-radius: 7px; background: var(--blue-soft); color: var(--management-link); font-size: var(--type-form-label); }
 .topic-field, .group-field { min-width: 0; }.topic-combobox, .group-combobox { position: relative; margin-top: 7px; }.config-panel .form-grid .topic-combobox input, .config-panel .form-grid .group-combobox input { margin-top: 0; }.topic-suggestions, .group-suggestions { position: absolute; z-index: 8; top: calc(100% + 4px); right: 0; left: 0; max-height: 240px; padding: 4px; overflow-y: auto; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; box-shadow: 0 6px 16px #0000001f; }.topic-suggestions button, .group-suggestions button { display: block; width: 100%; padding: 9px 10px; overflow: hidden; border: 0; border-radius: 4px; background: transparent; color: var(--text); font: 500 var(--type-form-body)/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: left; text-overflow: ellipsis; white-space: nowrap; }.topic-suggestions button:hover, .topic-suggestions button.active, .group-suggestions button:hover, .group-suggestions button.active { background: var(--blue-soft); color: var(--management-link); }.topic-empty, .group-empty { display: block; padding: 10px; color: var(--muted); font-size: var(--type-form-label); text-align: center; }.topic-hint, .group-hint { display: block; margin-top: 6px; color: var(--muted); font-size: var(--type-form-label); font-weight: 400; }
-.time-binding-guide { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; align-items: center; gap: 12px; margin-bottom: 14px; padding: 14px 16px; border: 1px solid #a9bcf5; border-radius: var(--radius-md); background: var(--blue-soft); }.time-binding-guide span, .time-binding-guide b { display: block; }.time-binding-guide span { margin-bottom: 3px; color: var(--text); font-size: var(--type-form-label); }.time-binding-guide b { color: var(--ink); font-size: var(--type-form-body); }.time-binding-guide strong { color: var(--management-link); font-size: var(--type-form-body); white-space: nowrap; }.time-binding-table { min-width: 960px; table-layout: fixed; }.time-binding-table th:nth-child(1) { width: 62px; }.time-binding-table th:nth-child(2) { width: 145px; }.time-binding-table th:nth-child(3) { width: 320px; }.time-binding-table th:nth-child(4) { width: 190px; }.time-binding-table th:nth-child(5) { width: 220px; }.time-binding-table td { height: 62px; }.time-binding-table tbody tr.active td { background: #f5f8ff; }.time-binding-table input[type='checkbox'] { width: 16px; height: 16px; accent-color: var(--blue); }.time-binding-table code { color: var(--management-link); font-size: var(--type-form-body); }
-.binding-select-all { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }.binding-select-all input { flex: 0 0 auto; margin: 0; }
-.time-strategy-control { position: relative; display: flex; width: 100%; min-width: 190px; height: var(--control-height); align-items: center; padding: 0 34px 0 11px; border: 1px solid #d9d9d9; border-radius: var(--radius-sm); background: #fff; transition: border-color .18s, box-shadow .18s, background .18s; }.time-strategy-control:hover { border-color: #91caff; }.time-strategy-control:focus-within { border-color: #1677ff; box-shadow: 0 0 0 3px #1677ff1a; }.time-strategy-control::after { position: absolute; top: 50%; right: 13px; width: 6px; height: 6px; border-right: 1.5px solid #606266; border-bottom: 1.5px solid #606266; content: ''; pointer-events: none; transform: translateY(-70%) rotate(45deg); }.time-strategy-control > b { display: block; min-width: 0; overflow: hidden; color: var(--text); font-size: var(--type-form-body); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }.time-strategy-control.disabled { background: #f5f5f5; }.time-strategy-control.disabled > b { color: var(--quiet); }.time-strategy-control.disabled::after { border-color: var(--quiet); }.time-strategy-select { position: absolute; z-index: 1; inset: 0; width: 100%; height: 100%; cursor: pointer; opacity: 0; }.time-strategy-select:disabled { cursor: not-allowed; }.binding-help { margin: 12px 0 0; color: var(--text); font-size: var(--type-form-label); }.binding-help code { color: var(--management-link); }
-.binding-section-heading { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--line); }.binding-section-heading h2 { margin: 0; color: var(--ink); font-size: 17px; }.binding-section-heading p { margin: 5px 0 0; color: var(--muted); font-size: var(--type-form-label); }.value-binding-editor { display: grid; grid-template-columns: minmax(260px, 1.7fr) minmax(170px, 1fr) minmax(130px, .7fr) minmax(170px, 1fr) auto; align-items: end; gap: 10px; margin: 14px 0; padding: 15px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fafbfd; }.value-binding-editor label { min-width: 0; color: #526078; font-size: var(--type-form-label); font-weight: 650; }.value-binding-editor select, .value-binding-editor input { width: 100%; height: var(--control-height); margin-top: 7px; padding: 0 11px; border: 1px solid #d9e0ea; border-radius: var(--radius-sm); background: #fff; color: var(--text); font-size: var(--type-form-body); }.value-binding-editor .button { height: var(--control-height); white-space: nowrap; }.value-binding-table { min-width: 800px; }.value-binding-table code { color: var(--management-link); font-size: var(--type-form-body); }
+.binding-page-heading, .system-binding-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }.binding-page-heading h2, .system-binding-heading h3 { margin: 0; color: var(--ink); font-size: 18px; }.binding-page-heading p, .system-binding-heading p { margin: 5px 0 0; color: var(--muted); font-size: var(--type-form-label); }
+.binding-page-heading .button-row.compact { flex: none; margin: 0; }
+.binding-section-tabs { display: flex; gap: 24px; margin: 18px 0 0; border-bottom: 1px solid var(--line); }.binding-section-tabs button { display: flex; min-height: 44px; align-items: center; gap: 8px; padding: 0 2px; border: 0; border-bottom: 3px solid transparent; background: transparent; color: #617188; font-size: var(--type-form-body); font-weight: 650; }.binding-section-tabs button.active { border-bottom-color: var(--blue); color: var(--management-link); }.binding-section-tabs b { display: grid; min-width: 22px; height: 20px; place-items: center; padding: 0 6px; border-radius: 10px; background: #eef2f7; color: #667085; font-size: 11px; }.binding-section-tabs button.active b { background: #e6f4ff; color: var(--blue); }
+.binding-workspace { padding-top: 16px; }.binding-toolbar { display: grid; grid-template-columns: minmax(220px, 1fr) auto auto auto; align-items: center; gap: 10px; }.binding-toolbar > .search-input { min-width: 0; }.binding-filter { display: flex; overflow: hidden; border: 1px solid #d9e0ea; border-radius: var(--radius-sm); background: #fff; }.binding-filter button { min-height: var(--control-height); padding: 0 12px; border: 0; border-right: 1px solid #d9e0ea; background: #fff; color: #5f6f85; font-size: var(--type-form-label); }.binding-filter button:last-child { border-right: 0; }.binding-filter button.active { background: var(--blue-soft); color: var(--management-link); font-weight: 650; }.binding-select-all { display: inline-flex; min-height: var(--control-height); align-items: center; gap: 7px; padding: 0 11px; border: 1px solid #d9e0ea; border-radius: var(--radius-sm); background: #fff; color: var(--text); cursor: pointer; font-size: var(--type-form-label); white-space: nowrap; }.binding-select-all input { width: 16px; height: 16px; flex: 0 0 auto; margin: 0; accent-color: var(--blue); }
+.time-rule-context { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 12px; margin: 14px 0; padding: 12px 16px; border: 1px solid #a9bcf5; border-radius: var(--radius-md); background: var(--blue-soft); }.time-rule-context div { min-width: 0; }.time-rule-context span, .time-rule-context b { display: block; }.time-rule-context span { color: #65758b; font-size: 11px; }.time-rule-context b { margin-top: 3px; overflow: hidden; color: var(--ink); font-size: var(--type-form-label); text-overflow: ellipsis; white-space: nowrap; }.time-rule-context i, .mapping-arrow { color: #84a3e8; font-style: normal; }
+.mapping-list { display: grid; gap: 8px; }.mapping-row { position: relative; display: grid; min-width: 0; grid-template-columns: 26px minmax(250px, 1.2fr) 22px minmax(250px, 1fr); align-items: center; gap: 12px; padding: 13px 14px 13px 17px; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fff; }.mapping-row::before { position: absolute; inset: 0 auto 0 0; width: 3px; background: #cbd5e1; content: ''; }.mapping-row.active { border-color: #c8d8fa; background: #fbfcff; }.mapping-row.active::before { background: var(--blue); }.mapping-toggle { display: grid; place-items: center; cursor: pointer; }.mapping-toggle input { position: absolute; opacity: 0; }.mapping-toggle span { position: relative; width: 18px; height: 18px; border: 1px solid #b6c0ce; border-radius: 4px; background: #fff; }.mapping-toggle input:focus-visible + span { outline: 3px solid #1677ff26; outline-offset: 2px; }.mapping-toggle input:checked + span { border-color: var(--blue); background: var(--blue); }.mapping-toggle input:checked + span::after { position: absolute; top: 2px; left: 5px; width: 5px; height: 9px; border-right: 2px solid #fff; border-bottom: 2px solid #fff; content: ''; transform: rotate(45deg); }
+.mapping-field, .mapping-rule { min-width: 0; }.mapping-field > div { display: flex; align-items: center; gap: 8px; }.mapping-field b { overflow: hidden; color: var(--ink); font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }.mapping-field em { flex: none; padding: 2px 6px; border-radius: 4px; background: #f1f3f6; color: #68778c; font-size: 10px; font-style: normal; }.mapping-row.active .mapping-field em { background: var(--blue-soft); color: var(--management-link); }.mapping-field > button { display: flex; max-width: 100%; align-items: center; gap: 7px; margin-top: 4px; padding: 0; border: 0; background: transparent; text-align: left; }.mapping-field code { overflow: hidden; color: #3d5f8a; font: 600 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }.mapping-field button span { flex: none; color: var(--management-link); font-size: 11px; opacity: 0; }.mapping-field button:hover span, .mapping-field button:focus-visible span { opacity: 1; }.mapping-field small, .mapping-rule small { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.mapping-rule label, .mapping-rule > span { display: block; color: #64748b; font-size: 11px; font-weight: 650; }.mapping-rule select { width: 100%; height: var(--control-height); margin-top: 5px; padding: 0 10px; border: 1px solid #d9e0ea; border-radius: var(--radius-sm); background: #fff; color: var(--text); font-size: var(--type-form-body); }.mapping-rule.disabled select { background: #f5f6f8; color: var(--quiet); }.mapping-rule > b { display: block; margin-top: 5px; color: var(--ink); font-size: 14px; }.binding-help { margin: 12px 0 0; color: var(--text); font-size: var(--type-form-label); }.binding-help code { color: var(--management-link); }.binding-empty { margin-top: 12px; padding: 34px 16px; border: 1px dashed #cbd5e1; border-radius: var(--radius-md); background: #fafbfd; color: var(--muted); font-size: var(--type-form-body); text-align: center; }
+.system-binding-heading { align-items: center; }.system-toolbar { display: flex; justify-content: space-between; margin: 14px 0; }.system-toolbar .search-input { width: min(440px, 100%); }.system-toolbar > span { color: var(--muted); font-size: var(--type-form-label); }.system-mapping-list .mapping-row { grid-template-columns: 42px minmax(250px, 1.2fr) 22px minmax(220px, .8fr) auto; }.mapping-kind { display: grid; width: 34px; height: 34px; place-items: center; border-radius: 6px; background: var(--blue-soft); color: var(--management-link); font: 700 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }.mapping-edit { justify-self: end; }
+.drawer-status { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 14px; border: 1px solid #ffd591; border-radius: var(--radius-sm); background: var(--amber-soft); }.drawer-status b { color: #ad4e00; }.drawer-status span { color: #874d00; font-size: var(--type-form-label); }.drawer-status.ready { border-color: #b7eb8f; background: var(--green-soft); }.drawer-status.ready b, .drawer-status.ready span { color: #237804; }
+.drawer-form { display: grid; gap: 16px; }.drawer-form > label { color: #526078; font-size: var(--type-form-label); font-weight: 650; }.drawer-form > label input, .drawer-form > label select { display: block; width: 100%; height: var(--control-height); margin-top: 7px; padding: 0 11px; border: 1px solid #d9e0ea; border-radius: var(--radius-sm); background: #fff; color: var(--text); }.field-picker { min-width: 0; max-height: 320px; margin: 0; padding: 8px; overflow-y: auto; border: 1px solid #d9e0ea; border-radius: var(--radius-sm); }.field-picker legend { padding: 0 6px; color: #526078; font-size: var(--type-form-label); font-weight: 650; }.field-picker > label { display: flex; align-items: flex-start; gap: 9px; padding: 10px; border: 1px solid transparent; border-radius: var(--radius-sm); cursor: pointer; }.field-picker > label:hover, .field-picker > label.selected { border-color: #91caff; background: var(--blue-soft); }.field-picker > label.bound { opacity: .58; cursor: not-allowed; }.field-picker input { margin-top: 3px; accent-color: var(--blue); }.field-picker span { min-width: 0; }.field-picker b, .field-picker code, .field-picker small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.field-picker b { color: var(--ink); font-size: var(--type-form-body); }.field-picker code { margin-top: 3px; color: #3d5f8a; font-size: 11px; }.field-picker small { margin-top: 3px; color: var(--muted); font-size: 11px; }.field-picker > p { color: var(--muted); text-align: center; }.binding-result-summary { padding: 12px 14px; border: 1px solid #a9bcf5; border-radius: var(--radius-sm); background: var(--blue-soft); }.binding-result-summary span, .binding-result-summary b, .binding-result-summary small { display: block; }.binding-result-summary span, .binding-result-summary small { color: #64748b; font-size: 11px; }.binding-result-summary b { margin: 4px 0; overflow-wrap: anywhere; color: var(--ink); font: 600 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }.drawer-footer-spacer { flex: 1; }
+.binding-preview-settings { display: flex; align-items: flex-end; gap: 10px; margin-bottom: 16px; }.binding-preview-settings label { min-width: 0; flex: 1; color: #526078; font-size: var(--type-form-label); font-weight: 650; }.binding-preview-settings input { display: block; width: 100%; height: var(--control-height); margin-top: 7px; padding: 0 10px; border: 1px solid #d9e0ea; border-radius: var(--radius-sm); }.binding-preview-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-bottom: 14px; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-sm); }.binding-preview-summary div { padding: 11px 12px; border-right: 1px solid var(--line); }.binding-preview-summary div:last-child { border-right: 0; }.binding-preview-summary span, .binding-preview-summary b { display: block; }.binding-preview-summary span { color: var(--muted); font-size: 11px; }.binding-preview-summary b { margin-top: 4px; color: var(--ink); font-size: 14px; }.binding-preview-summary b.warning { color: var(--amber); }.binding-preview-code { max-height: 520px; margin: 0; overflow: auto; }
 .file-template-panel .form-grid { margin-top: 18px; }
 .file-template-panel label small { display: block; margin-top: 6px; color: var(--muted); font-size: var(--type-form-label); font-weight: 400; }
 .file-generation-flow { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 14px; border: 1px solid #a9bcf5; border-radius: var(--radius-md); background: #f5f8ff; color: var(--management-link); font-size: var(--type-form-body); }
 .file-generation-flow span { padding: 7px 11px; border-radius: var(--radius-sm); background: #fff; }.file-generation-flow b { color: #7894e9; }
 .file-inspection-result { display: flex; align-items: stretch; gap: 10px; margin-top: 16px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fafbfd; }.file-inspection-result > div, .file-inspection-result button { min-width: 150px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; text-align: left; }.file-inspection-result button { cursor: pointer; }.file-inspection-result button.selected { border-color: var(--blue); background: var(--blue-soft); }.file-inspection-result span, .file-inspection-result b, .file-inspection-result small { display: block; }.file-inspection-result span, .file-inspection-result small { color: var(--muted); font-size: var(--type-form-label); }.file-inspection-result b { margin: 4px 0; color: var(--ink); font-size: var(--type-form-body); }
-@media (max-width: 1320px) { .editor-workbench { grid-template-columns: 170px minmax(0, 1fr); }.editor-inspector { position: static; grid-column: 1 / -1; }.inspector-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }.inspector-facts div { border-right: 1px solid #f0f0f0; border-bottom: 0; }.inspector-issues { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 1100px) { .editor-workbench { grid-template-columns: 1fr; }.editor-step-aside { position: static; }.editor-step-aside .tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }.editor-step-aside .tabs button { border-left: 0; border-bottom: 2px solid transparent; }.editor-step-aside .tabs button.active { border-bottom-color: var(--blue); }.editor-step-help { display: none; }.data-linkage-grid { grid-template-columns: 1fr; }.linkage-step > p { min-height: 0; }.file-generation-flow { align-items: stretch; flex-direction: column; }.file-generation-flow b { display: none; }.value-binding-editor { grid-template-columns: 1fr 1fr; } }
-@media (max-width: 900px) { .list-toolbar, .filters { align-items: stretch; flex-direction: column; }.filters label { width: 100%; }.binding-overview { grid-template-columns: 1fr; }.binding-overview > div { border-right: 0; border-bottom: 1px solid #e7ecf3; }.linked-elements-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }.time-binding-guide { grid-template-columns: 1fr 1fr; }.pre-generate-layout { grid-template-columns: 1fr; }.pre-generate-facts { grid-template-columns: 1fr; } }
+.file-rule-steps { display: grid; grid-template-columns: repeat(4, 1fr); margin: 0 0 16px; border: 1px solid var(--line); border-radius: 8px; background: #fafafa; overflow: hidden; }
+.file-rule-steps > div { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 12px 14px; border-right: 1px solid var(--line); }
+.file-rule-steps > div:last-child { border-right: 0; }.file-rule-steps i { display: grid; flex: 0 0 24px; width: 24px; height: 24px; place-items: center; border-radius: 4px; background: #e6f4ff; color: #1677ff; font-size: 12px; font-style: normal; font-weight: 700; }
+.file-rule-steps b, .file-rule-steps small { display: block; }.file-rule-steps b { color: var(--ink); font-size: 13px; }.file-rule-steps small { margin-top: 2px; color: var(--muted); font-size: 11px; }
+.file-rule-section { margin-top: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+.file-rule-section.passthrough { border-color: #91caff; background: #f7faff; }.file-rule-section.passthrough .file-rule-empty { border-color: #91caff; background: #fff; color: #3d5f8a; }
+.file-rule-section > div:first-child { display: flex; align-items: flex-start; gap: 10px; }.file-rule-section > div:first-child > div { min-width: 0; flex: 1; }.file-rule-section h3 { margin: 0; color: var(--ink); font-size: 15px; }.file-rule-section p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }.section-index { color: #1677ff; font: 700 11px/20px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.preset-section { border-top: 3px solid #1677ff; }.preset-picker { display: flex; gap: 8px; margin-top: 14px; }.preset-picker select { min-width: 360px; height: var(--control-height); padding: 0 10px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; }
+.file-source-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 14px; }.file-source-grid .wide-field { grid-column: span 2; }
+.file-rule-list { display: grid; gap: 8px; margin-top: 12px; }.file-rule-list article { display: grid; grid-template-columns: 130px minmax(170px, .8fr) minmax(220px, 1fr) minmax(140px, .7fr) auto; align-items: end; gap: 10px; padding: 11px 12px; border: 1px solid #e6eaf0; border-left: 3px solid #1677ff; border-radius: 6px; background: #fafbfd; }.file-rule-list label { display: grid; gap: 5px; color: #526078; font-size: 11px; font-weight: 650; }.file-rule-list input, .file-rule-list select { width: 100%; height: 34px; padding: 0 9px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; }.file-rule-list article > small { align-self: center; color: var(--muted); font-size: 11px; }.rule-kind { align-self: center; color: #1677ff; font-size: 12px; font-weight: 700; }.content-rule-list article { grid-template-columns: 130px minmax(200px, 1.2fr) minmax(190px, .8fr) minmax(170px, .8fr) minmax(120px, .5fr) auto; }.file-rule-empty { margin-top: 12px; padding: 18px; border: 1px dashed #d9d9d9; border-radius: 6px; background: #fafafa; color: var(--muted); text-align: center; font-size: 12px; }
+.positional-rule-list article { grid-template-columns: repeat(4, minmax(150px, 1fr)); align-items: end; }.positional-rule-list .rule-kind { grid-column: 1 / -1; padding-bottom: 4px; border-bottom: 1px solid #e6eaf0; }.positional-rule-list article > small { min-height: 34px; display: flex; align-items: center; }.positional-rule-list article > .link-button { justify-self: start; }
+@media (max-width: 1100px) { .file-rule-steps { grid-template-columns: repeat(2, 1fr); }.file-source-grid { grid-template-columns: 1fr 1fr; }.file-rule-list article, .content-rule-list article { grid-template-columns: 1fr 1fr; align-items: start; }.file-rule-list article > .link-button { justify-self: start; }.preset-picker select { min-width: 0; flex: 1; } }
+@media (max-width: 1100px) { .editor-step-header .tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }.data-linkage-grid { grid-template-columns: 1fr; }.linkage-step > p { min-height: 0; }.file-generation-flow { align-items: stretch; flex-direction: column; }.file-generation-flow b { display: none; }.binding-toolbar { grid-template-columns: minmax(220px, 1fr) auto; }.mapping-row, .system-mapping-list .mapping-row { grid-template-columns: 26px minmax(220px, 1fr) 18px minmax(220px, .9fr); }.system-mapping-list .mapping-kind { display: none; }.system-mapping-list .mapping-edit { grid-column: 4; }.system-binding-heading { align-items: flex-start; } }
+@media (max-width: 900px) { .list-toolbar, .filters { align-items: stretch; flex-direction: column; }.filters label { width: 100%; }.binding-overview { grid-template-columns: 1fr; }.binding-overview > div { border-right: 0; border-bottom: 1px solid #e7ecf3; }.linked-elements-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }.pre-generate-layout { grid-template-columns: 1fr; }.pre-generate-facts { grid-template-columns: 1fr; }.mapping-row, .system-mapping-list .mapping-row { grid-template-columns: 24px minmax(0, 1fr); }.mapping-arrow { display: none; }.mapping-rule, .mapping-edit, .system-mapping-list .mapping-edit { grid-column: 2; }.time-rule-context { grid-template-columns: 1fr; }.time-rule-context i { display: none; }.system-toolbar { align-items: stretch; flex-direction: column; }.system-toolbar .search-input { width: 100%; } }
+@media (max-width: 680px) { .editor-step-header .tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }.config-step-navigation { align-items: flex-start; flex-direction: column; }.binding-toolbar { grid-template-columns: 1fr; }.binding-filter { width: 100%; }.binding-filter button { flex: 1; }.binding-page-heading { align-items: stretch; flex-direction: column; }.binding-section-tabs { gap: 16px; } }
 </style>

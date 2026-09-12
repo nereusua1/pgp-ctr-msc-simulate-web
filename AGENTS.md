@@ -6,6 +6,12 @@
 
 - Vue 3、Vite 6、原生 JavaScript、Node.js test runner。
 
+## README synchronization
+
+- 每次更新本 web 项目（包括代码、配置、测试、构建、部署或文档）时，必须在同一批变更中同步更新根目录 `README.md`。
+- 开始修改前阅读 `README.md`；交付前逐项核对本次变更涉及的页面功能、权限、交互、接口契约、启动配置、构建部署与验证说明，并更新对应章节。README 以当前实际实现为准，计划中的能力须明确标为未实现。
+- 若变更不影响使用说明，在 README 的“维护记录”中简述本次变更及核对结果；不得仅修改日期充当同步。交付前检查文档中的路径、命令和配置名称，并在最终回答中说明 README 已同步。
+
 ## Module seams
 
 - `src/api.js` 是后端 HTTP Interface 的唯一 Adapter；页面通过该模块访问 `/api`。

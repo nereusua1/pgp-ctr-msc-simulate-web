@@ -54,11 +54,43 @@ function periodHours(template) {
   return values.length ? Math.max(...values) : 0
 }
 
-function simulatedFileName(sourceName, plannedAt) {
+function parseFileTime(value, pattern) {
+  const parts = {yyyy: 1970, MM: 1, dd: 1, HH: 0, mm: 0, ss: 0}
+  let cursor = 0
+  for (const token of ['yyyy', 'MM', 'dd', 'HH', 'mm', 'ss']) {
+    const index = pattern.indexOf(token)
+    if (index >= 0) parts[token] = Number(value.slice(index, index + token.length))
+    cursor = Math.max(cursor, index + token.length)
+  }
+  const date = new Date(parts.yyyy, parts.MM - 1, parts.dd, parts.HH, parts.mm, parts.ss)
+  return Number.isNaN(date.getTime()) || cursor > value.length ? null : date
+}
+
+function generatedFileName(sourceName, bindings, plannedAt, endAt) {
   const name = String(sourceName || 'PRE_GENERATED_FILE.dat').split('/').pop()
-  const dot = name.lastIndexOf('.')
-  const marker = formatTime(plannedAt, 'yyyyMMddHHmmss')
-  return dot > 0 ? `${name.slice(0, dot)}_SIM_${marker}${name.slice(dot)}` : `${name}_SIM_${marker}`
+  if (!bindings?.length) return name
+  const matches = [...name.matchAll(/(?<!\d)((?:19|20)\d{4}(?:\d{2}){0,4})(?!\d)/g)]
+  const replacements = new Map()
+  for (const binding of bindings) {
+    const match = matches[Number(binding.index)]
+    if (!match) continue
+    let target = binding.source === 'PERIOD_END_TIME' ? endAt : plannedAt
+    if (binding.source === 'BUSINESS_DAY_START') target = new Date(plannedAt.getFullYear(), plannedAt.getMonth(), plannedAt.getDate())
+    if (binding.source === 'PRESERVE_OFFSET') {
+      const reference = bindings.find(item => Number(item.index) === Number(binding.relativeTo || 0)) || bindings[0]
+      const oldReference = parseFileTime(matches[Number(reference.index)]?.[1] || '', reference.format)
+      const oldCurrent = parseFileTime(match[1], binding.format)
+      if (oldReference && oldCurrent) target = new Date(plannedAt.getTime() + oldCurrent.getTime() - oldReference.getTime())
+    }
+    replacements.set(Number(binding.index), formatTime(target, binding.format))
+  }
+  let cursor = 0
+  let result = ''
+  matches.forEach((match, index) => {
+    result += name.slice(cursor, match.index) + (replacements.get(index) || match[1])
+    cursor = match.index + match[1].length
+  })
+  return result + name.slice(cursor)
 }
 
 function replaceFileReferences(value, fileName) {
@@ -108,7 +140,7 @@ export function preGenerateMessage(template, plannedValue, now = new Date(), uui
   let fileName = ''
   if (template.type === 'FILE') {
     const configuredName = template.fileGeneration?.sourceFileName || findFirstValue(content, 'fileName')
-    fileName = simulatedFileName(configuredName, plannedAt)
+    fileName = generatedFileName(configuredName, template.fileGeneration?.fileNameBindings, plannedAt, endAt)
     replaceFileReferences(content, fileName)
   }
   return {
