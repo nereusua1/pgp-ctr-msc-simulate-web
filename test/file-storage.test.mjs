@@ -18,6 +18,7 @@ test('FILE 报文默认使用 OSS，并允许切换到 OBS 或 HTTP', () => {
   assert.match(messageView, /<option value="HTTP">HTTP（Nginx）<\/option>/)
   assert.match(messageView, /<option value="PASSTHROUGH">仅替换文件名（内容原样复制）<\/option>/)
   assert.match(messageView, /<option value="POSITIONAL_TEXT">无表头文本定位<\/option>/)
+  assert.match(messageView, /<option value="FIXED_WIDTH">定长文本<\/option>/)
   assert.match(messageView, /文件将按字节原样复制，只生成新文件名/)
   assert.match(messageView, /file-rule-section\.passthrough/)
 })

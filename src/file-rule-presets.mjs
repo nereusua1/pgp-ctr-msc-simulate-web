@@ -61,7 +61,9 @@ export const FILE_RULE_PRESETS = [
   ['GS-PV', '甘肃短中期光伏预报', 'ZZJGGF-sun-2026041708.txt', 'AUTO', 'AUTO', [filename(0, 'yyyyMMddHH')], [
     positioned({type: 'TOKEN_COLUMN', columnIndex: 0, separator: 'WHITESPACE', header: false}, 'yyyyMMddHHmm', 'SHIFT_BY_FILENAME_DELTA', 'BUSINESS_BASE_TIME', 'ALL_ROWS')
   ], 'POSITIONAL_TEXT'],
-  ['22', '极端天气预警定长文件（待确认）', 'D7babj2520_博罗依.txt', 'AUTO', 'UTF-8', [], [], 'FIXED_WIDTH', false]
+  ['22', '极端天气预警定长文件', 'D7babj2520_博罗依.txt', 'AUTO', 'UTF-8', [], [
+    {mode: 'SHIFT', fields: ['Year', 'Month', 'Day', 'Hour'], source: 'BUSINESS_BASE_TIME'}
+  ], 'FIXED_WIDTH']
 ].map(([id, name, sourceFileName, delimiter, encoding, fileNameBindings, contentBindings, parserMode = 'DELIMITED', enabled = true]) => ({
   id, name, enabled, sourceFileName, parserMode, delimiter, encoding, fileNameBindings, contentBindings
 }))

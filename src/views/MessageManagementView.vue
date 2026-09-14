@@ -171,6 +171,9 @@ const invalidValueBindings = computed(() => valueRuleBindings.value.filter(bindi
 function hasFileGenerationRule() {
   const generation = form.fileGeneration || {}
   if (generation.parserMode === 'PASSTHROUGH') return Boolean(generation.fileNameBindings?.length)
+  if (generation.parserMode === 'FIXED_WIDTH') return generation.contentBindings?.length === 1
+    && generation.contentBindings[0].mode === 'SHIFT'
+    && ['Year', 'Month', 'Day', 'Hour'].every(field => generation.contentBindings[0].fields?.includes(field))
   if (generation.parserMode === 'POSITIONAL_TEXT') return Boolean(generation.contentBindings?.length
     && generation.contentBindings.every(binding => binding.locator?.type && binding.format
       && (binding.mode !== 'SHIFT_BY_FILENAME_DELTA' || generation.fileNameBindings?.some(item => Number(item.index) === Number(binding.referenceFileNameTimeIndex ?? 0)))))
@@ -774,9 +777,10 @@ function applyFilePreset() {
   const {id, name, enabled, ...rules} = preset
   form.fileGeneration = normalizeFileGeneration({...rules, presetId: id, sourceFilePath: currentPath, storageType, schemaVersion: 2})
   fileInspection.value = null
-  emit('notify', form.fileGeneration.parserMode === 'POSITIONAL_TEXT'
-    ? `已应用“${preset.name}”规则，请填写源文件地址并通过预生成验证`
-    : `已应用“${preset.name}”规则，请填写源文件地址并扫描验证`)
+  const validationHint = ['POSITIONAL_TEXT', 'FIXED_WIDTH'].includes(form.fileGeneration.parserMode)
+    ? '请填写源文件地址并通过预生成验证'
+    : '请填写源文件地址并扫描验证'
+  emit('notify', `已应用“${preset.name}”规则，${validationHint}`)
 }
 function addDetectedContentBinding(column) {
   const bindings = form.fileGeneration.contentBindings || (form.fileGeneration.contentBindings = [])
@@ -787,7 +791,9 @@ function removeFileNameBinding(index) { form.fileGeneration.fileNameBindings.spl
 function removeContentBinding(index) { form.fileGeneration.contentBindings.splice(index, 1) }
 function changeFileParserMode() {
   fileInspection.value = null
-  form.fileGeneration.contentBindings = []
+  form.fileGeneration.contentBindings = form.fileGeneration.parserMode === 'FIXED_WIDTH'
+    ? [{mode: 'SHIFT', fields: ['Year', 'Month', 'Day', 'Hour'], source: 'BUSINESS_BASE_TIME'}]
+    : []
 }
 function addFileNameBinding() {
   form.fileGeneration.fileNameBindings.push({index: form.fileGeneration.fileNameBindings.length, format: 'yyyyMMddHHmmss', source: 'BUSINESS_BASE_TIME', relativeTo: null})
@@ -926,11 +932,11 @@ function confirmDelete() {
         <section class="linkage-step element-step" :class="{ disabled: !form.dataBinding?.sourceCode }"><h3><span>3</span>选择要素项</h3><p>支持搜索、多选及全选当前结果。</p><label class="catalog-search">搜索要素项<input v-model="elementKeyword" :disabled="!form.dataBinding?.sourceCode" placeholder="要素编码或中文名称"></label><button class="select-all" type="button" :disabled="!elementOptions.length" @click="toggleAllElements">全选/取消当前结果 · 已选 {{ form.dataBinding?.elements?.length || 0 }} 项</button><div class="element-options"><label v-for="item in elementOptions" :key="item.id" :class="{ selected: isElementSelected(item) }"><input type="checkbox" :checked="isElementSelected(item)" @change="toggleElement(item)"><span><b>{{ item.code }} · {{ item.name || '未配置中文名称' }}</b><small>{{ item.unit || '无单位' }} · {{ item.dataFormat || '未配置格式' }}</small></span></label><div v-if="catalogLoading.elements" class="catalog-empty">正在加载…</div><div v-else-if="form.dataBinding?.sourceCode && !elementOptions.length" class="catalog-empty">没有匹配的要素项</div></div></section>
       </div><div class="binding-summary"><div><b>{{ form.dataBinding?.sourceCode || '未选择数据源' }} / {{ form.dataBinding?.dataItemCode || '未选择数据项' }}</b><small>{{ form.dataBinding?.sourceName || '—' }} · {{ form.dataBinding?.dataItemName || '—' }}</small><div class="selected-element-chips"><span v-for="element in form.dataBinding?.elements" :key="element.id">{{ element.code }} {{ element.name }}</span></div></div><strong>已选 {{ form.dataBinding?.elements?.length || 0 }} 个要素</strong></div></section>
       <section v-else-if="activeTab === 'file'" id="config-panel-file" class="config-panel file-template-panel" role="tabpanel">
-        <div class="card-heading"><div><h2>文件生成规则</h2><p>按样例结构配置一次。后续文件名可以变化，结构兼容时无需修改代码。</p></div><button class="button secondary" :disabled="fileInspecting || ['PASSTHROUGH', 'POSITIONAL_TEXT'].includes(form.fileGeneration.parserMode)" @click="inspectSourceFile">{{ form.fileGeneration.parserMode === 'PASSTHROUGH' ? '无需识别内容' : form.fileGeneration.parserMode === 'POSITIONAL_TEXT' ? '预生成时校验' : (fileInspecting ? '正在识别…' : '识别文件结构') }}</button></div>
+        <div class="card-heading"><div><h2>文件生成规则</h2><p>按样例结构配置一次。后续文件名可以变化，结构兼容时无需修改代码。</p></div><button class="button secondary" :disabled="fileInspecting || ['PASSTHROUGH', 'POSITIONAL_TEXT', 'FIXED_WIDTH'].includes(form.fileGeneration.parserMode)" @click="inspectSourceFile">{{ form.fileGeneration.parserMode === 'PASSTHROUGH' ? '无需识别内容' : form.fileGeneration.parserMode === 'POSITIONAL_TEXT' ? '预生成时校验' : form.fileGeneration.parserMode === 'FIXED_WIDTH' ? '执行时校验文件头' : (fileInspecting ? '正在识别…' : '识别文件结构') }}</button></div>
         <div class="file-rule-steps"><div class="active"><i>1</i><span><b>选择样例规则</b><small>复用已确认配置</small></span></div><div><i>2</i><span><b>识别文件结构</b><small>确认编码与字段</small></span></div><div><i>3</i><span><b>配置时间绑定</b><small>文件名与内容分开</small></span></div><div><i>4</i><span><b>预生成验证</b><small>执行前检查结果</small></span></div></div>
 
         <section class="file-rule-section preset-section">
-          <div><span class="section-index">01</span><div><h3>样例规则</h3><p>已将确认过的通用、工研院及甘肃样例整理为可复用规则；定长文件保留为待确认。</p></div></div>
+          <div><span class="section-index">01</span><div><h3>样例规则</h3><p>已将确认过的通用、定长、工研院及甘肃样例整理为可复用规则。</p></div></div>
           <div class="preset-picker"><select v-model="selectedFilePresetId"><option value="">选择样例规则模板</option><option v-for="preset in FILE_RULE_PRESETS" :key="preset.id" :value="preset.id" :disabled="!preset.enabled">{{ preset.id }} · {{ preset.name }}{{ preset.enabled ? '' : '（待确认）' }}</option></select><button class="button secondary" type="button" :disabled="!selectedFilePresetId" @click="applyFilePreset">应用规则</button></div>
         </section>
 
@@ -940,7 +946,7 @@ function confirmDelete() {
             <label>文件存储<select v-model="form.fileGeneration.storageType" @change="fileInspection = null"><option value="OSS">阿里云 OSS</option><option value="OBS">华为云 OBS</option><option value="HTTP">HTTP（Nginx）</option></select></label>
             <label class="wide-field">源文件地址<input v-model.trim="form.fileGeneration.sourceFilePath" :placeholder="form.fileGeneration.storageType === 'HTTP' ? '例如 http://127.0.0.1:8088/files/source.csv' : '例如 forecast/source.csv'"><small>留空时读取外层报文中的 filePath。</small></label>
             <label>原始文件名<input v-model.trim="form.fileGeneration.sourceFileName" placeholder="从地址自动提取"><small>可填写纠正后的业务文件名。</small></label>
-            <label>处理方式<select v-model="form.fileGeneration.parserMode" @change="changeFileParserMode"><option value="PASSTHROUGH">仅替换文件名（内容原样复制）</option><option value="DELIMITED">表格 / 分隔文本</option><option value="KEY_VALUE">键值文本</option><option value="POSITIONAL_TEXT">无表头文本定位</option><option value="FIXED_WIDTH" disabled>定长文本（待确认）</option></select><small>{{ form.fileGeneration.parserMode === 'PASSTHROUGH' ? '不解析编码、分隔符或文件内容。' : form.fileGeneration.parserMode === 'POSITIONAL_TEXT' ? '按行标记或无表头列定位，只替换时间文本。' : '解析文件并按内容绑定改写。' }}</small></label>
+            <label>处理方式<select v-model="form.fileGeneration.parserMode" @change="changeFileParserMode"><option value="PASSTHROUGH">仅替换文件名（内容原样复制）</option><option value="DELIMITED">表格 / 分隔文本</option><option value="KEY_VALUE">键值文本</option><option value="POSITIONAL_TEXT">无表头文本定位</option><option value="FIXED_WIDTH">定长文本</option></select><small>{{ form.fileGeneration.parserMode === 'PASSTHROUGH' ? '不解析编码、分隔符或文件内容。' : form.fileGeneration.parserMode === 'POSITIONAL_TEXT' ? '按行标记或无表头列定位，只替换时间文本。' : form.fileGeneration.parserMode === 'FIXED_WIDTH' ? '按文件头声明的字段宽度定位并整体平移组合时间。' : '解析文件并按内容绑定改写。' }}</small></label>
             <label>字符编码<select v-model="form.fileGeneration.encoding" :disabled="form.fileGeneration.parserMode === 'PASSTHROUGH'"><option value="AUTO">自动识别</option><option value="UTF-8">UTF-8</option><option value="GB18030">GB18030</option></select></label>
             <label>字段分隔符<select v-model="form.fileGeneration.delimiter" :disabled="form.fileGeneration.parserMode !== 'DELIMITED'"><option value="AUTO">自动识别</option><option value=",">逗号</option><option value="TAB">制表符</option><option value="|">竖线</option><option value=";">分号</option></select></label>
           </div>
@@ -954,7 +960,7 @@ function confirmDelete() {
         </section>
 
         <section class="file-rule-section" :class="{ passthrough: form.fileGeneration.parserMode === 'PASSTHROUGH' }">
-          <div><span class="section-index">04</span><div><h3>文件内容时间</h3><p>{{ form.fileGeneration.parserMode === 'PASSTHROUGH' ? '当前使用原样复制，系统不会读取或改写文件内容。' : form.fileGeneration.parserMode === 'POSITIONAL_TEXT' ? '通过行前缀、行后缀或无表头列定位；保留原文件空白、列宽和换行。' : '每种文件独立绑定字段；支持多个时间列和年月日组合字段。' }}</p></div><button v-if="form.fileGeneration.parserMode !== 'PASSTHROUGH'" class="link-button" type="button" @click="addContentBinding">添加内容绑定</button></div>
+          <div><span class="section-index">04</span><div><h3>文件内容时间</h3><p>{{ form.fileGeneration.parserMode === 'PASSTHROUGH' ? '当前使用原样复制，系统不会读取或改写文件内容。' : form.fileGeneration.parserMode === 'POSITIONAL_TEXT' ? '通过行标记或无表头列定位；保留原文件空白、列宽和换行。' : form.fileGeneration.parserMode === 'FIXED_WIDTH' ? '读取文件头字段宽度，平移 Year、Month、Day、Hour 并保持记录间原始时差。' : '每种文件独立绑定字段；支持多个时间列和年月日组合字段。' }}</p></div><button v-if="!['PASSTHROUGH', 'FIXED_WIDTH'].includes(form.fileGeneration.parserMode)" class="link-button" type="button" @click="addContentBinding">添加内容绑定</button></div>
           <div v-if="form.fileGeneration.contentBindings.length" class="file-rule-list content-rule-list" :class="{'positional-rule-list': form.fileGeneration.parserMode === 'POSITIONAL_TEXT'}"><article v-for="(binding, index) in form.fileGeneration.contentBindings" :key="index"><span class="rule-kind">{{ fileModeLabel(binding.mode) }}</span><template v-if="form.fileGeneration.parserMode === 'POSITIONAL_TEXT'"><label>定位方式<select v-model="binding.locator.type" @change="changePositionalLocator(binding)"><option value="TOKEN_COLUMN">无表头列</option><option value="LINE_PREFIX">行前缀</option><option value="LINE_SUFFIX">行后缀</option></select></label><label v-if="binding.locator.type === 'LINE_PREFIX'">行前缀<input v-model.trim="binding.locator.prefix" placeholder="例如 SPCC"></label><label v-if="binding.locator.type === 'LINE_SUFFIX'">行后缀<input v-model.trim="binding.locator.suffix" placeholder="例如 时兰州区域中心订正预报"></label><label v-if="binding.locator.type === 'TOKEN_COLUMN'">列序号（从 0 开始）<input v-model.number="binding.locator.columnIndex" type="number" min="0"></label><label v-else>字段序号（从 0 开始）<input v-model.number="binding.locator.tokenIndex" type="number" min="0"></label><label v-if="binding.locator.type === 'TOKEN_COLUMN'">列分隔<select v-model="binding.locator.separator"><option value="WHITESPACE">任意空白</option><option value="TAB">制表符</option></select></label><label>替换方式<select v-model="binding.mode"><option value="SET">设置为指定时间</option><option value="SHIFT_BY_FILENAME_DELTA">按文件名时间差平移</option></select></label><label>时间格式<input v-model.trim="binding.format" placeholder="yyyyMMddHHmm"></label><label v-if="binding.mode === 'SET'">时间来源<select v-model="binding.source"><option v-for="source in FILE_TIME_SOURCES.filter(item => item[0] !== 'PRESERVE_OFFSET')" :key="source[0]" :value="source[0]">{{ source[1] }}</option></select></label><label v-else>参考文件名时间<select v-model.number="binding.referenceFileNameTimeIndex"><option v-for="item in form.fileGeneration.fileNameBindings" :key="item.index" :value="item.index">第 {{ Number(item.index) + 1 }} 个 · {{ item.format }}</option></select></label><small>{{ binding.expectedMatches === 'ALL_ROWS' ? '校验每个非空行均命中' : `校验命中 ${binding.expectedMatches || 1} 处` }}</small></template><template v-else><label>字段<input :value="binding.fields?.join(', ')" placeholder="多个字段用逗号分隔" @input="binding.fields = $event.target.value.split(',').map(value => value.trim()).filter(Boolean)"></label><label>替换方式<select v-model="binding.mode"><option v-for="mode in FILE_CONTENT_MODES.filter(item => item[0] !== 'SHIFT_BY_FILENAME_DELTA')" :key="mode[0]" :value="mode[0]">{{ mode[1] }}</option></select></label><label v-if="binding.mode !== 'COMPOSITE'">时间格式<input v-model.trim="binding.format" placeholder="yyyyMMddHHmmss"></label><label v-if="binding.mode === 'DERIVED'">偏移分钟<input v-model.number="binding.offsetMinutes" type="number"></label></template><button class="link-button danger-text" type="button" @click="removeContentBinding(index)">删除</button></article></div>
           <div v-else class="file-rule-empty">{{ form.fileGeneration.parserMode === 'PASSTHROUGH' ? '文件将按字节原样复制，只生成新文件名。' : '未配置内容替换。执行时不会替换文件中的字段值。' }}</div>
         </section>
