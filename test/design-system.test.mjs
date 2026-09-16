@@ -14,6 +14,20 @@ const dataItemView = await readFile(new URL('../src/views/DataItemManagementView
 const componentView = await readFile(new URL('../src/views/MessageComponentManagementView.vue', import.meta.url), 'utf8')
 const loginView = await readFile(new URL('../src/views/LoginView.vue', import.meta.url), 'utf8')
 const icon = await readFile(new URL('../src/components/AppIcon.vue', import.meta.url), 'utf8')
+const searchInput = await readFile(new URL('../src/components/SearchInput.vue', import.meta.url), 'utf8')
+const truncatedText = await readFile(new URL('../src/components/TruncatedText.vue', import.meta.url), 'utf8')
+
+test('搜索输入框只显示容器焦点状态，避免输入内容区域出现重复轮廓', () => {
+  assert.match(searchInput, /input:focus-visible\s*\{[^}]*outline:\s*0;/s)
+})
+
+test('全局截断文本提示层脱离滚动容器并保持在视口内', () => {
+  assert.match(truncatedText, /<Teleport to="body">/)
+  assert.match(truncatedText, /position:\s*fixed/)
+  assert.match(truncatedText, /getBoundingClientRect\(\)/)
+  assert.match(truncatedText, /window\.addEventListener\('scroll', updatePosition, true\)/)
+  assert.match(truncatedText, /viewportWidth - panel\.width - edge/)
+})
 
 test('列表筛选紧凑左对齐，条数选择仅在表格底部分页区', async () => {
   const execution = await readFile(new URL('../src/views/ExecutionLogView.vue', import.meta.url), 'utf8')
@@ -370,7 +384,8 @@ test('报文编辑器采用全宽步骤工作台和无横向表格的映射式�
   assert.match(messageView, /草稿可暂存未完成配置/)
   assert.match(messageView, /当前已发布版本继续生效/)
   assert.match(messageView, /aria-label="全选时间字段替换"/)
-  assert.match(messageView, /class="mapping-list"/)
+  assert.match(messageView, /class="mapping-list time-mapping-list"/)
+  assert.match(messageView, /\.time-mapping-list \{ grid-template-columns: repeat\(2/)
   assert.match(messageView, /class="mapping-row"/)
   assert.match(messageView, /@click="openValueBindingEditor\(\)"/)
   assert.match(messageView, /@click="openBindingPreview"/)

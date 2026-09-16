@@ -70,6 +70,8 @@ input {
   line-height: 36px;
 }
 
+input:focus-visible { outline: 0; }
+
 input::placeholder { color: #a8abb2; }
 
 button {

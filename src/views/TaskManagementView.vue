@@ -31,6 +31,7 @@ const emit = defineEmits(['editing-state', 'create', 'run', 'preview-time', 'upd
 const selectedId = ref('')
 const dialog = ref('')
 const formError = ref('')
+const cronExpressionError = ref('')
 const runError = ref('')
 const batchIds = ref([])
 const batchResults = ref([])
@@ -38,13 +39,17 @@ const {keyword, status: statusFilter, page, pageSize} = useListState('tasks')
 const messageFilter = ref('ALL')
 const dataItemFilter = ref('')
 const dataSourceFilter = ref('')
-const form = reactive({name: '', messageId: '', scheduleType: 'FIXED_RATE', schedule: '10', scheduleYear: '*'})
+const defaultExecutionWindow = () => ({type: 'UNBOUNDED', startDate: '', endDate: ''})
+const normalizeExecutionWindow = value => value?.type === 'DATE_RANGE'
+  ? {type: 'DATE_RANGE', startDate: value.startDate || '', endDate: value.endDate || ''}
+  : defaultExecutionWindow()
+const form = reactive({name: '', messageId: '', scheduleType: 'FIXED_RATE', schedule: '10', scheduleYear: '*', autoExecutionWindow: defaultExecutionWindow()})
 const runForm = reactive({mode: 'MANUAL_CURRENT', plannedTriggerTime: ''})
 const timePreview = ref(null)
 const executionOverview = ref(null)
 const executionOverviewLoading = ref(false)
 const executionOverviewError = ref('')
-const cron = reactive({year: '*', month: '*', day: '*', hour: '*', minute: '*/5', second: '0'})
+const cron = reactive({year: '*', month: '*', day: '*', hour: '*', minute: '*/5', second: '0', weekday: '?'})
 const currentYear = new Date().getFullYear()
 const yearOptions = Array.from({length: 11}, (_, index) => String(currentYear + index))
 const numericOptions = (max, unit, intervals = []) => [
@@ -64,6 +69,9 @@ const hourOptions = numericOptions(23, '小时', [2, 3, 4, 6, 12])
 const minuteOptions = numericOptions(59, '分钟', [5, 10, 15, 20, 30])
 const secondOptions = numericOptions(59, '秒', [5, 10, 15, 30])
 const optionLabel = (options, value, suffix = '') => options.find(item => item.value === value)?.label || `${value}${suffix}`
+const customCronOption = (options, value, suffix = '') => options.some(item => item.value === value) ? null : {
+  value, label: `${String(value || '').split(',').join('、')}${suffix}`
+}
 const cronDescription = computed(() => [
   cron.year === '*' ? '每年' : `${cron.year} 年`,
   optionLabel(monthOptions, cron.month, ' 月'),
@@ -127,11 +135,15 @@ const scheduleText = task => {
   if (task.scheduleType === 'CRON') return task.scheduleYear && task.scheduleYear !== '*' ? `${task.scheduleYear} 年 · ${task.schedule}` : task.schedule
   return `每 ${task.schedule} 秒`
 }
+const executionWindowText = task => {
+  const window = normalizeExecutionWindow(task?.autoExecutionWindow)
+  return window.type === 'DATE_RANGE' ? `${window.startDate || '未设置'} 至 ${window.endDate || '未设置'}` : '长期有效'
+}
 const isPending = key => props.pendingActions.has(key)
 const isTaskPending = task => task && ['run', 'update', 'remove'].some(action => isPending(`${action}:tasks:${task.id}`) || isPending(`${action}:${task.id}`))
 
 function syncCronExpression() {
-  form.schedule = `${cron.second} ${cron.minute} ${cron.hour} ${cron.day} ${cron.month} ?`
+  form.schedule = `${cron.second} ${cron.minute} ${cron.hour} ${cron.day} ${cron.month} ${cron.weekday}`
   form.scheduleYear = cron.year
 }
 
@@ -143,12 +155,35 @@ function loadCronExpression(expression, year = '*') {
     hour: parts.length >= 6 ? parts[2] : '*',
     day: parts.length >= 6 ? parts[3] : '*',
     month: parts.length >= 6 ? parts[4] : '*',
+    weekday: parts.length >= 6 ? parts[5] : '?',
     year: year || '*'
   })
   syncCronExpression()
 }
 
+function applyCronExpression() {
+  const expression = String(form.schedule || '').trim()
+  const parts = expression.split(/\s+/)
+  const bounds = [[0, 59], [0, 59], [0, 23], [1, 31], [1, 12], [0, 7]]
+  const invalidField = parts.findIndex((part, index) => {
+    if (!/^[A-Za-z0-9*?,/#LW-]+$/.test(part)) return true
+    const [min, max] = bounds[index] || []
+    return [...part.matchAll(/\d+/g)].some(match => {
+      const value = Number(match[0])
+      return min !== undefined && (value < min || value > max)
+    })
+  })
+  if (parts.length !== 6 || invalidField >= 0) {
+    cronExpressionError.value = '请输入六段 Spring Cron 表达式，例如 0 0 8,20 * * ?'
+    return false
+  }
+  cronExpressionError.value = ''
+  loadCronExpression(expression, form.scheduleYear)
+  return true
+}
+
 function onScheduleTypeChange() {
+  cronExpressionError.value = ''
   if (form.scheduleType === 'CRON') loadCronExpression(form.schedule, form.scheduleYear)
   if (form.scheduleType === 'FIXED_RATE' && /\s/.test(String(form.schedule || ''))) form.schedule = '10'
 }
@@ -156,6 +191,7 @@ function onScheduleTypeChange() {
 function openCreate() {
   const template = null
   formError.value = ''
+  cronExpressionError.value = ''
   dataItemFilter.value = ''
   dataSourceFilter.value = ''
   Object.assign(form, {
@@ -163,7 +199,8 @@ function openCreate() {
     messageId: template?.id || '',
     scheduleType: 'FIXED_RATE',
     schedule: '10',
-    scheduleYear: '*'
+    scheduleYear: '*',
+    autoExecutionWindow: defaultExecutionWindow()
   })
   dialog.value = 'create'
 }
@@ -173,6 +210,7 @@ onBeforeUnmount(() => window.removeEventListener('global-create', handleGlobalCr
 
 function openEdit(task) {
   formError.value = ''
+  cronExpressionError.value = ''
   selectedId.value = task.id
   const template = props.templates.find(item => item.id === task.messageId)
   const binding = bindingOf(template)
@@ -183,13 +221,18 @@ function openEdit(task) {
     messageId: task.messageId || '',
     scheduleType: task.scheduleType || 'FIXED_RATE',
     schedule: task.schedule || '',
-    scheduleYear: task.scheduleYear || '*'
+    scheduleYear: task.scheduleYear || '*',
+    autoExecutionWindow: normalizeExecutionWindow(task.autoExecutionWindow)
   })
   if (form.scheduleType === 'CRON') loadCronExpression(form.schedule, form.scheduleYear)
   dialog.value = 'edit'
 }
 
 function submit() {
+  if (form.scheduleType === 'CRON' && !applyCronExpression()) {
+    formError.value = cronExpressionError.value
+    return
+  }
   formError.value = taskFormError(form)
   if (formError.value) return
   if (dialog.value === 'edit' && selected.value) {
@@ -362,7 +405,7 @@ const {dirty: formDirty, confirmClose: confirmFormClose} = useFormLeaveGuard(
               <button class="management-primary task-name-button" @click="openDetail(task)">{{ task.name }}</button>
             </td>
             <td class="related-message">{{ templates.find(item => item.id === task.messageId)?.name || '未关联报文' }}</td>
-            <td class="responsive-low"><code class="schedule-value">{{ scheduleText(task) }}</code></td>
+            <td class="responsive-low"><code class="schedule-value">{{ scheduleText(task) }}</code><small v-if="task.scheduleType !== 'MANUAL'" class="execution-window-value">{{ executionWindowText(task) }}</small></td>
             <td>
               <StatusBadge :status="task.status"/>
             </td>
@@ -423,7 +466,7 @@ const {dirty: formDirty, confirmClose: confirmFormClose} = useFormLeaveGuard(
             <div><h3>Cron 执行时间</h3>
               <p>依次选择年月日时分秒，系统自动生成调度规则。</p></div>
           </div>
-          <div class="cron-expression"><span>生成表达式</span><code>{{ form.schedule }}</code></div>
+          <div class="cron-expression"><label for="cron-expression-input">Cron 表达式</label><input id="cron-expression-input" v-model.trim="form.schedule" spellcheck="false" placeholder="例如 0 0 8,20 * * ?" @input="cronExpressionError = ''" @blur="applyCronExpression"><small :class="{error: cronExpressionError}">{{ cronExpressionError || '支持逗号列表、范围、步长等 Spring 六段 Cron 语法' }}</small></div>
         </div>
         <div class="cron-grid"><label class="cron-unit"><span>年</span>
           <div class="cron-select"><b>{{ cron.year === '*' ? '每年' : `${cron.year} 年` }}</b><select
@@ -434,32 +477,49 @@ const {dirty: formDirty, confirmClose: confirmFormClose} = useFormLeaveGuard(
         </label><label class="cron-unit"><span>月</span>
           <div class="cron-select"><b>{{ optionLabel(monthOptions, cron.month) }}</b><select v-model="cron.month"
                                                                                              aria-label="月">
+            <option v-if="customCronOption(monthOptions, cron.month, ' 月')" :value="cron.month">{{ customCronOption(monthOptions, cron.month, ' 月').label }}</option>
             <option v-for="item in monthOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
           </select></div>
         </label><label class="cron-unit"><span>日</span>
           <div class="cron-select"><b>{{ optionLabel(dayOptions, cron.day) }}</b><select v-model="cron.day"
                                                                                          aria-label="日">
+            <option v-if="customCronOption(dayOptions, cron.day, ' 日')" :value="cron.day">{{ customCronOption(dayOptions, cron.day, ' 日').label }}</option>
             <option v-for="item in dayOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
           </select></div>
         </label><label class="cron-unit"><span>时</span>
           <div class="cron-select"><b>{{ optionLabel(hourOptions, cron.hour) }}</b><select v-model="cron.hour"
                                                                                            aria-label="时">
+            <option v-if="customCronOption(hourOptions, cron.hour, ' 时')" :value="cron.hour">{{ customCronOption(hourOptions, cron.hour, ' 时').label }}</option>
             <option v-for="item in hourOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
           </select></div>
         </label><label class="cron-unit"><span>分</span>
           <div class="cron-select"><b>{{ optionLabel(minuteOptions, cron.minute) }}</b><select v-model="cron.minute"
                                                                                                aria-label="分">
+            <option v-if="customCronOption(minuteOptions, cron.minute, ' 分')" :value="cron.minute">{{ customCronOption(minuteOptions, cron.minute, ' 分').label }}</option>
             <option v-for="item in minuteOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
           </select></div>
         </label><label class="cron-unit"><span>秒</span>
           <div class="cron-select"><b>{{ optionLabel(secondOptions, cron.second) }}</b><select v-model="cron.second"
                                                                                                aria-label="秒">
+            <option v-if="customCronOption(secondOptions, cron.second, ' 秒')" :value="cron.second">{{ customCronOption(secondOptions, cron.second, ' 秒').label }}</option>
             <option v-for="item in secondOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
           </select></div>
         </label></div>
         <div class="cron-summary"><span>执行规则</span><b>{{
             cronDescription
           }}</b><small>年份独立保存，六段表达式与当前调度引擎兼容</small></div>
+      </section>
+      <section v-if="form.scheduleType !== 'MANUAL'" class="execution-window-editor">
+        <div class="execution-window-heading"><div><h3>自动执行有效期</h3><p>仅限制系统定时调度，立即执行和历史补跑不受此范围限制。</p></div>
+          <label><span>有效期类型</span><select v-model="form.autoExecutionWindow.type"><option value="UNBOUNDED">长期有效</option><option value="DATE_RANGE">指定日期范围</option></select></label>
+        </div>
+        <div v-if="form.autoExecutionWindow.type === 'DATE_RANGE'" class="execution-window-fields">
+          <label><span>开始日期</span><input v-model="form.autoExecutionWindow.startDate" type="date" :max="form.autoExecutionWindow.endDate || undefined"></label>
+          <label><span>结束日期</span><input v-model="form.autoExecutionWindow.endDate" type="date" :min="form.autoExecutionWindow.startDate || undefined"></label>
+        </div>
+        <p class="execution-window-summary">{{ form.autoExecutionWindow.type === 'DATE_RANGE' && form.autoExecutionWindow.startDate && form.autoExecutionWindow.endDate
+          ? `自动调度仅在 ${form.autoExecutionWindow.startDate} 至 ${form.autoExecutionWindow.endDate} 执行，包含首尾日期。`
+          : '自动调度长期有效。' }}</p>
       </section>
       <div class="notice subtle">MQ 实例、Producer Group 和 Topic 统一继承所选报文的默认投递目标，任务中不再重复配置。</div>
       <template #footer>
@@ -469,7 +529,7 @@ const {dirty: formDirty, confirmClose: confirmFormClose} = useFormLeaveGuard(
     </AppModal>
 
     <AppDetailPage v-if="dialog === 'detail' && selected" title="任务详情" @close="dialog = ''; setRoute('tasks')">
-      <p class="notice">自动调度：{{ selected.status === 'ENABLED' ? '已启用' : '未启用' }}。手工执行：{{ manualUnavailable || '可进入预检' }}。停用自动调度不影响历史补跑。</p>
+      <p class="notice">自动调度：{{ selected.status === 'ENABLED' ? '已启用' : '未启用' }}。手工执行：{{ manualUnavailable || '可进入预检' }}。自动执行有效期和停用状态均不限制历史补跑。</p>
       <div class="unified-detail task-detail">
         <DetailHeader eyebrow="模拟任务" :title="selected.name" :code="selected.id" description="任务继承关联报文的全部投递目标，并按当前调度规则触发执行。">
           <template #aside><StatusBadge :status="selected.status"/><button class="button secondary small" :disabled="isTaskPending(selected)" @click="setTaskEnabled(selected, selected.status !== 'ENABLED')">{{ selected.status === 'ENABLED' ? '停用' : '启用' }}</button></template>
@@ -478,6 +538,7 @@ const {dirty: formDirty, confirmClose: confirmFormClose} = useFormLeaveGuard(
           <div><dt>关联报文</dt><dd>{{ selectedTemplate?.name || '未关联' }}</dd></div>
           <div><dt>调度方式</dt><dd>{{ selected.scheduleType === 'CRON' ? 'Cron 调度' : (selected.scheduleType === 'MANUAL' ? '手工执行' : '固定频率') }}</dd></div>
           <div><dt>调度规则</dt><dd><code class="detail-code">{{ scheduleText(selected) }}</code></dd></div>
+          <div><dt>自动执行有效期</dt><dd>{{ selected.scheduleType === 'MANUAL' ? '不适用' : executionWindowText(selected) }}</dd></div>
           <div><dt>投递策略</dt><dd>继承关联报文配置</dd></div>
           <div><dt>累计执行</dt><dd>{{ executionOverviewLoading ? '读取中…' : `${executionOverview?.total || 0} 次` }}</dd></div>
           <div><dt>最近执行</dt><dd>{{ latestExecution ? formatDateTime(latestExecution.startedAt) : '尚未执行' }}</dd></div>
@@ -625,6 +686,18 @@ const {dirty: formDirty, confirmClose: confirmFormClose} = useFormLeaveGuard(
 .task-table .task-name-button:hover { color: #173f9e; }
 .task-table .related-message { color: #4f6178; font-size: 15px; font-weight: 450; }
 body .page .task-table code.schedule-value { color: #52647c; font-size: 14px; font-weight: 550; letter-spacing: 0; }
+.execution-window-value { display: block; margin-top: 4px; color: #7b8798; font-size: 12px; }
+.execution-window-editor { display: grid; gap: 16px; margin-top: 18px; padding: 18px; border: 1px solid #dfe5ee; border-radius: 12px; background: #f8fafc; }
+.execution-window-heading { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, 220px); align-items: end; gap: 20px; }
+.execution-window-heading h3, .execution-window-heading p { margin: 0; }
+.execution-window-heading h3 { color: #26384f; font-size: 16px; line-height: 1.45; }
+.execution-window-heading p { max-width: 42ch; margin-top: 5px; color: #68778c; font-size: 13px; line-height: 1.6; }
+.execution-window-heading label, .execution-window-fields label { display: grid; min-width: 0; gap: 7px; color: #526078; font-size: 12px; font-weight: 650; }
+.execution-window-heading select, .execution-window-fields input { width: 100%; height: 40px; box-sizing: border-box; padding: 0 11px; border: 1px solid #d4dbe6; border-radius: 6px; outline: none; background: #fff; color: #303847; font-family: inherit; font-size: 14px; font-weight: 500; line-height: 1.4; transition: border-color .16s, box-shadow .16s; }
+.execution-window-heading select:hover, .execution-window-fields input:hover { border-color: #aeb9c8; }
+.execution-window-heading select:focus, .execution-window-fields input:focus { border-color: #1677ff; box-shadow: 0 0 0 3px rgba(22, 119, 255, .1); }
+.execution-window-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.execution-window-summary { margin: 0; padding-top: 14px; border-top: 1px solid #e4e9f0; color: #52647c; font-size: 13px; line-height: 1.55; }
 .unified-detail { display: grid; gap: 16px; }
 .detail-code { color: #38516e; font: 600 14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .detail-loading, .detail-error { display: flex; min-height: 78px; align-items: center; justify-content: center; gap: 12px; padding: 16px 18px; border: 1px solid #f0f0f0; border-radius: 8px; background: #fff; color: #595959; font-size: 15px; }
@@ -811,20 +884,39 @@ body .page .task-table code.schedule-value { color: #52647c; font-size: 14px; fo
   gap: 4px;
 }
 
-.cron-expression span {
+.cron-expression label {
   color: #909399;
   font-size: 11px;
 }
 
-.cron-expression code {
-  padding: 7px 11px;
-  border: 1px solid #d9ecff;
+.cron-expression input {
+  width: 280px;
+  height: 36px;
+  padding: 0 11px;
+  border: 1px solid #b8d8ff;
   border-radius: 4px;
-  background: #ecf5ff;
-  color: #337ecc;
-  font-size: 13px;
+  outline: 0;
+  background: #fff;
+  color: #2859a8;
+  font: 600 13px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.cron-expression input:focus {
+  border-color: #409eff;
+  box-shadow: 0 0 0 3px rgba(64, 158, 255, .1);
+}
+
+.cron-expression small {
+  max-width: 360px;
+  color: #909399;
+  font-size: 10px;
+  line-height: 1.4;
+  text-align: right;
+}
+
+.cron-expression small.error {
+  color: #f56c6c;
   font-weight: 600;
-  white-space: nowrap;
 }
 
 .cron-grid {
@@ -957,6 +1049,8 @@ body .page .task-table code.schedule-value { color: #52647c; font-size: 14px; fo
   .time-preview-grid > div:last-child { border-bottom: 0; }
   .specified-time-heading { align-items: stretch; flex-direction: column; }
   .specified-time-heading .button { width: 100%; }
+  .execution-window-heading { grid-template-columns: 1fr; align-items: stretch; gap: 14px; }
+  .execution-window-fields { grid-template-columns: 1fr; }
 
   .cron-heading {
     align-items: flex-start;

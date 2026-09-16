@@ -27,6 +27,13 @@ test('任务名称、模板及固定间隔须有效', () => {
   assert.ok(taskFormError({name:'任务', messageId:'m', scheduleType:'FIXED_RATE', schedule:'-1'}))
   assert.equal(taskFormError({name:'任务', messageId:'m', scheduleType:'MANUAL'}), '')
 })
+test('自动执行日期范围必须完整且开始日期不晚于结束日期', () => {
+  const base = {name:'任务', messageId:'m', scheduleType:'CRON', schedule:'0 0 8 * * ?'}
+  assert.equal(taskFormError({...base, autoExecutionWindow:{type:'DATE_RANGE', startDate:'2026-01-01', endDate:'2026-06-30'}}), '')
+  assert.equal(taskFormError({...base, autoExecutionWindow:{type:'DATE_RANGE', startDate:'2026-07-01', endDate:'2026-06-30'}}), '自动执行开始日期不能晚于结束日期')
+  assert.equal(taskFormError({...base, autoExecutionWindow:{type:'DATE_RANGE', startDate:'2026-02-30', endDate:'2026-06-30'}}), '请选择完整且有效的自动执行开始日期和结束日期')
+  assert.equal(taskFormError({...base, autoExecutionWindow:{type:'UNBOUNDED'}}), '')
+})
 test('未知阶段和部分成功不能伪装成全链路完成', () => {
   assert.equal(evidenceState('PARTIAL_SUCCESS', -1, 0), 'pending')
   assert.equal(evidenceState('FAILED', 2, 2), 'failed')
@@ -37,5 +44,9 @@ test('详情地址可包含中文及转义标识且可恢复', () => {
   const path = routePath('messages', '气象/a', true)
   assert.deepEqual(parseRoute(path), {page:'messages', id:'气象/a', edit:true})
   assert.equal(routePath('logs', 'ex-1'), '/executions/ex-1')
+  assert.equal(routePath('file-rules'), '/file-rules')
+  assert.deepEqual(parseRoute('/file-rules'), {page:'file-rules', id:'', edit:false})
+  assert.equal(routePath('file-rules', '规则/a', true), '/file-rules/%E8%A7%84%E5%88%99%2Fa/edit')
+  assert.deepEqual(parseRoute('/file-rules/rule-1/edit'), {page:'file-rules', id:'rule-1', edit:true})
   assert.equal(parseRoute('/tasks/%').id, '')
 })

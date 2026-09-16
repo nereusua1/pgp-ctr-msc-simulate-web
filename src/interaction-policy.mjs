@@ -18,7 +18,19 @@ export function taskFormError(form) {
   if (!form.name?.trim()) return '请输入任务名称'
   if (!form.messageId) return '请选择报文模板'
   if (form.scheduleType === 'FIXED_RATE' && (!Number.isFinite(Number(form.schedule)) || Number(form.schedule) <= 0)) return '执行间隔必须大于 0 秒'
+  const window = form.autoExecutionWindow || {type: 'UNBOUNDED'}
+  if (form.scheduleType !== 'MANUAL' && window.type === 'DATE_RANGE') {
+    if (!validDate(window.startDate) || !validDate(window.endDate)) return '请选择完整且有效的自动执行开始日期和结束日期'
+    if (window.startDate > window.endDate) return '自动执行开始日期不能晚于结束日期'
+  }
   return ''
+}
+
+/** 日期输入必须是实际存在的 yyyy-MM-dd，避免浏览器外部调用提交归一化后的无效日期。 */
+function validDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) return false
+  const parsed = new Date(`${value}T00:00:00Z`)
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value
 }
 
 /** 不推测已完成阶段；仅成功终态或明确失败阶段可形成证据。 */

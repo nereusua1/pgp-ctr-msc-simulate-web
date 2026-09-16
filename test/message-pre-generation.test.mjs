@@ -28,6 +28,7 @@ test('JSON 预生成替换系统值、时间规则和常量但不执行投递', 
   assert.match(result.generatedAt, /^\d{4}-\d{2}-\d{2} /)
 })
 
+
 test('无效 JSON 返回可定位的行号提示', () => {
   assert.throws(() => preGenerateMessage({...template, content:'{\n  "broken":\n}'}, '2026-09-08T14:00:00'), /第 3 行附近/)
 })

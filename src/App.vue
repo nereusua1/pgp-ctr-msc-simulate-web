@@ -5,6 +5,7 @@ import {parseRoute, setRoute} from './page-route.mjs'
 import OverviewView from './views/OverviewView.vue'
 import TaskManagementView from './views/TaskManagementView.vue'
 import MessageManagementView from './views/MessageManagementView.vue'
+import FileRuleTemplateView from './views/FileRuleTemplateView.vue'
 import DataItemManagementView from './views/DataItemManagementView.vue'
 import MessageComponentManagementView from './views/MessageComponentManagementView.vue'
 import ExecutionLogView from './views/ExecutionLogView.vue'
@@ -28,6 +29,7 @@ const navigation = [
   {key: 'overview', label: '运行总览', icon: 'overview'},
   {key: 'tasks', label: '任务管理', icon: 'tasks'},
   {key: 'messages', label: '报文模板', icon: 'messages'},
+  {key: 'file-rules', label: '文件规则模板', icon: 'messages'},
   {key: 'data-items', label: '数据项管理', icon: 'data'},
   {key: 'message-components', label: '消息云组件', icon: 'components'},
   {key: 'logs', label: '执行记录', icon: 'logs'}
@@ -35,6 +37,7 @@ const navigation = [
 const endpoints = {
   tasks: 'tasks',
   messages: 'messages',
+  'file-rules': 'file-rule-templates',
   'data-items': 'data-items',
   'message-components': 'message-components'
 }
@@ -43,6 +46,7 @@ const activePage = ref(initialRoute.page)
 const dataItems = ref([])
 const components = ref([])
 const templates = ref([])
+const fileRuleTemplates = ref([])
 const tasks = ref([])
 const executions = ref([])
 const executionAnalytics = ref({trend: [], failureStages: [], mqDistribution: [], taskTrends: [], recentFailures: []})
@@ -90,7 +94,7 @@ const canManage = computed(() => canManageConfiguration(currentUser.value))
 const visibleNavigation = computed(() => navigation.filter(item => canManage.value || ['overview', 'tasks', 'logs'].includes(item.key)))
 const navigationGroups = computed(() => [
   {label: '工作台', items: visibleNavigation.value.filter(item => item.key === 'overview')},
-  {label: '配置管理', items: visibleNavigation.value.filter(item => ['messages', 'data-items', 'message-components'].includes(item.key))},
+  {label: '配置管理', items: visibleNavigation.value.filter(item => ['messages', 'file-rules', 'data-items', 'message-components'].includes(item.key))},
   {label: '运行管理', items: visibleNavigation.value.filter(item => ['tasks', 'logs'].includes(item.key))}
 ].filter(group => group.items.length))
 watch(canManage, () => {
@@ -102,6 +106,7 @@ const currentComponent = computed(() => ({
   overview: OverviewView,
   tasks: TaskManagementView,
   messages: MessageManagementView,
+  'file-rules': FileRuleTemplateView,
   'data-items': DataItemManagementView,
   'message-components': MessageComponentManagementView,
   logs: ExecutionLogView
@@ -135,6 +140,14 @@ const pageProps = computed(() => {
     sources: dataItems.value,
     components: components.value,
     tasks: tasks.value,
+    pendingActions,
+    canManage: canManage.value,
+    routeId: routeId.value,
+    fileRuleTemplates: fileRuleTemplates.value
+  }
+  if (activePage.value === 'file-rules') return {
+    templates: fileRuleTemplates.value,
+    messages: templates.value,
     pendingActions,
     canManage: canManage.value,
     routeId: routeId.value
@@ -179,7 +192,7 @@ function navigate(page, filter) {
   if (page !== 'tasks') selectedTaskId.value = ''
   if (page !== 'logs') selectedExecutionId.value = ''
   if (filter?.keyword != null) {
-    const prefix = {'message-components': 'components', 'data-items': 'data', messages: 'messages', tasks: 'tasks'}[page]
+    const prefix = {'message-components': 'components', 'data-items': 'data', messages: 'messages', 'file-rules': 'fileRules', tasks: 'tasks'}[page]
     if (prefix) {
       const query = new URLSearchParams(window.location.search)
       query.set(prefix + '.q', filter.keyword)
@@ -197,7 +210,7 @@ function syncRoute() {
   const route = parseRoute(window.location.pathname)
   if (hasUnsavedMessageChanges.value && (route.page !== activePage.value || route.id !== routeId.value) &&
       !window.confirm('当前修改尚未保存，是否离开？')) {
-    setRoute(activePage.value, routeId.value, activePage.value === 'messages' && Boolean(routeId.value), true)
+    setRoute(activePage.value, routeId.value, ['messages', 'file-rules'].includes(activePage.value) && Boolean(routeId.value), true)
     return
   }
   if (isAuthenticated.value && !canManage.value && !['overview', 'tasks', 'logs'].includes(route.page)) {
@@ -234,6 +247,7 @@ function requireLogin() {
   dataItems.value = [];
   components.value = [];
   templates.value = [];
+  fileRuleTemplates.value = [];
   tasks.value = [];
   executions.value = [];
   executionMessages.value = []
@@ -297,6 +311,7 @@ async function loadAll(showLoading = true) {
     ['数据项', () => api.list('data-items'), rows => { dataItems.value = rows.map(normalizeDataItem) }],
     ['消息云组件', () => api.list('message-components'), rows => { components.value = rows.map(flattenResource) }],
     ['报文模板', () => api.list('messages'), rows => { templates.value = rows.map(normalizeTemplate) }],
+    ['文件规则模板', () => api.list('file-rule-templates'), rows => { fileRuleTemplates.value = rows.map(flattenResource) }],
     ['任务', () => api.list('tasks'), rows => { tasks.value = rows.map(flattenResource) }],
     ['执行记录', () => api.listExecutions(executionQuery), rows => { if (isLatestExecution()) applyExecutionPage(rows) }],
     ['运行统计', () => api.getExecutionAnalytics(analyticsRange.value), rows => { executionAnalytics.value = rows || {} }]
@@ -360,7 +375,8 @@ async function createResource(item, onCreated, onFailed) {
       const created = await api.create(endpoint, serializeResource(item))
       await loadAll(false)
       if (typeof onCreated === 'function') onCreated(flattenResource(created))
-      notify(Object.values(resourceErrors).some(Boolean) ? '已保存，部分列表更新失败，可重新加载' : '已保存')
+      const message = endpoint === 'file-rule-templates' && item.status === 'PUBLISHED' ? '模板发布成功' : '已保存'
+      notify(Object.values(resourceErrors).some(Boolean) ? `${message}，部分列表更新失败，可重新加载` : message)
     } catch (error) {
       if (typeof onFailed === 'function') onFailed(error.message)
       showError(error)
@@ -379,7 +395,8 @@ async function updateResource(item, onUpdated) {
       }
       await loadAll(false)
       if (typeof onUpdated === 'function') onUpdated({success: true, resource: flattenResource(updated)})
-      notify(Object.values(resourceErrors).some(Boolean) ? '修改已保存，部分列表更新失败，可重新加载' : '修改已保存')
+      const message = endpoint === 'file-rule-templates' && item.status === 'PUBLISHED' ? '模板发布成功' : '修改已保存'
+      notify(Object.values(resourceErrors).some(Boolean) ? `${message}，部分列表更新失败，可重新加载` : message)
     } catch (error) {
       if (typeof onUpdated === 'function') onUpdated({success: false, error: error.message})
       showError(error)

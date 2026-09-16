@@ -2,6 +2,20 @@
 
 - 每次最终回答末尾写“使用的 skills”，仅列出本轮实际读取并应用的 Skill；未使用时写“使用的 skills：无”。
 
+## Agent skills
+
+### Issue tracker
+
+Issues and specs are tracked in this repository's GitHub Issues. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The canonical triage roles use the default label vocabulary. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This repository uses a single-context domain-doc layout. See `docs/agents/domain.md`.
+
 ## Technology
 
 - Vue 3、Vite 6、原生 JavaScript、Node.js test runner。

@@ -1,4 +1,4 @@
-const paths = {overview: 'overview', tasks: 'tasks', messages: 'messages', 'data-items': 'data-items', 'message-components': 'message-components', logs: 'executions'}
+const paths = {overview: 'overview', tasks: 'tasks', messages: 'messages', 'file-rules': 'file-rules', 'data-items': 'data-items', 'message-components': 'message-components', logs: 'executions'}
 const scrollPositions = new Map()
 export function parseRoute(pathname) {
   const parts = pathname.split('/').filter(Boolean)
