@@ -31,3 +31,24 @@ export function useListState(prefix) {
   onBeforeUnmount(() => window.removeEventListener('popstate', restore))
   return {keyword, status, page, pageSize}
 }
+
+/** 为列表补充一个可由地址栏恢复的独立筛选条件。 */
+export function useListQueryValue(prefix, key, fallback = '') {
+  const value = ref(fallback)
+  let syncing = false
+  function restore() {
+    syncing = true
+    value.value = new URLSearchParams(window.location.search).get(`${prefix}.${key}`) || fallback
+    syncing = false
+  }
+  restore()
+  watch(value, current => {
+    if (syncing) return
+    const query = new URLSearchParams(window.location.search)
+    query.set(`${prefix}.${key}`, String(current))
+    window.history.replaceState(window.history.state, '', window.location.pathname + '?' + query.toString())
+  }, {flush: 'sync'})
+  window.addEventListener('popstate', restore)
+  onBeforeUnmount(() => window.removeEventListener('popstate', restore))
+  return value
+}

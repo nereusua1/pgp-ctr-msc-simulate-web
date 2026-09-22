@@ -24,11 +24,17 @@ const emit = defineEmits(['load-messages', 'query-executions'])
 
 const keyword = ref(props.executionPage.keyword || '')
 const executionStatus = ref(props.executionPage.status || 'ALL')
+const messageType = ref(props.executionPage.messageType || 'ALL')
+const dataItemCode = ref(props.executionPage.dataItemCode || '')
+const failureStage = ref(props.executionPage.failureStage || '')
+const startTime = ref(props.executionPage.startTime || '')
+const endTime = ref(props.executionPage.endTime || '')
 const selectedExecutionId = ref('')
 const messageStatus = ref('ALL')
 const detailMessage = ref(null)
 const messagesError = ref('')
 const isPending = key => props.pendingActions.has(key)
+const queryPayload = (overrides = {}) => ({page: 1, size: props.executionPage.size, keyword: keyword.value.trim(), status: executionStatus.value, messageType: messageType.value, dataItemCode: dataItemCode.value.trim(), failureStage: failureStage.value.trim(), startTime: startTime.value, endTime: endTime.value, ...overrides})
 
 const selectedExecution = computed(() => props.executions.find(item => item.id === selectedExecutionId.value))
 const executionCounts = computed(() => ({
@@ -40,17 +46,26 @@ const filteredExecutions = computed(() => props.executions)
 const filteredMessages = computed(() => props.messages.filter(item =>
   item.executionId === selectedExecutionId.value && (messageStatus.value === 'ALL' || item.status === messageStatus.value)
 ))
+const messageGroups = computed(() => {
+  const groups = new Map()
+  for (const item of filteredMessages.value) {
+    const key = item.messageTemplateId || '__single__'
+    if (!groups.has(key)) groups.set(key, {key, messageName: item.memberMessageName || '', items: []})
+    groups.get(key).items.push(item)
+  }
+  return [...groups.values()]
+})
 const evidenceSteps = computed(() => {
   if (!selectedExecution.value) return []
   const stages = [
     { key: 'trigger', label: '任务触发', hint: selectedExecution.value.triggerMode === 'SCHEDULED' ? '定时任务' : '手工执行' },
     { key: 'message', label: '报文生成', hint: selectedExecution.value.messageName || '关联报文' },
     { key: 'binding', label: '数据与时间绑定', hint: selectedExecution.value.businessBaseAt ? '已形成业务时间上下文' : '等待执行证据' },
-    ...(selectedExecution.value.messageType === 'FILE' ? [{ key: 'file', label: '文件处理', hint: '改写并发布文件引用' }] : []),
-    { key: 'delivery', label: 'MQ 投递', hint: selectedExecution.value.target || '未进入投递' }
+    ...(['FILE', 'UNSTRUCTURED_FILE'].includes(selectedExecution.value.messageType) ? [{ key: 'file', label: '文件处理', hint: selectedExecution.value.messageType === 'UNSTRUCTURED_FILE' ? '原样复制并更新文件引用' : '解析并发布文件引用' }] : []),
+    { key: 'delivery', label: '目标投递', hint: selectedExecution.value.target || '未进入投递' }
   ]
   const failure = props.messages.find(item => item.executionId === selectedExecutionId.value && item.status === 'FAILED')?.failureStage || (selectedExecution.value.status === 'FAILED' ? selectedExecution.value.errorSummary : '')
-  const failedKey = /解析任务|解析投递目标/.test(failure) ? 'trigger' : (/生成文件/.test(failure) ? 'file' : (/投递/.test(failure) ? 'delivery' : (/生成报文|时间/.test(failure) ? 'binding' : '')))
+  const failedKey = /RESOLVE_TASK/.test(failure) ? 'trigger' : (/RESOLVE_MESSAGE/.test(failure) ? 'message' : (/TRANSFORM_FILE|COPY_UNSTRUCTURED_FILE|PUBLISH_FILE/.test(failure) ? 'file' : (/DELIVER_|SAVE_EXECUTION_EVIDENCE/.test(failure) ? 'delivery' : (/PLAN_TIME|RENDER_PAYLOAD/.test(failure) ? 'binding' : ''))))
   const failedIndex = stages.findIndex(item => item.key === failedKey)
   return stages.map((item, index) => ({ ...item, state: evidenceState(selectedExecution.value.status, failedIndex, index) }))
 })
@@ -93,10 +108,13 @@ let syncingQuery = false
 watch(keyword, () => {
   if (syncingQuery) return
   clearTimeout(searchTimer)
-  searchTimer = setTimeout(() => emit('query-executions', { page: 1, size: props.executionPage.size, keyword: keyword.value.trim(), status: executionStatus.value }), 300)
+  searchTimer = setTimeout(() => emit('query-executions', queryPayload()), 300)
 })
 watch(executionStatus, () => {
-  if (!syncingQuery) emit('query-executions', { page: 1, size: props.executionPage.size, keyword: keyword.value.trim(), status: executionStatus.value })
+  if (!syncingQuery) emit('query-executions', queryPayload())
+})
+watch([messageType, dataItemCode, failureStage, startTime, endTime], () => {
+  if (!syncingQuery) emit('query-executions', queryPayload())
 })
 /** 接收总览图表带入的筛选条件，同时避免字段同步再次发起重复请求。 */
 watch(() => [props.executionPage.keyword, props.executionPage.status], ([nextKeyword, nextStatus]) => {
@@ -116,14 +134,15 @@ onBeforeUnmount(() => clearTimeout(searchTimer))
 
 function changePage(page) {
   if (page < 1 || page > props.executionPage.totalPages || isPending('query:executions')) return
-  emit('query-executions', { page, size: props.executionPage.size, keyword: keyword.value.trim(), status: executionStatus.value })
+  emit('query-executions', queryPayload({page}))
 }
 function clearExecutionFilters() {
   syncingQuery = true
   keyword.value = ''
   executionStatus.value = 'ALL'
+  messageType.value = 'ALL'; dataItemCode.value = ''; failureStage.value = ''; startTime.value = ''; endTime.value = ''
   queueMicrotask(() => { syncingQuery = false })
-  emit('query-executions', {page: 1, size: props.executionPage.size, keyword: '', status: 'ALL'})
+  emit('query-executions', queryPayload({page: 1, keyword: '', status: 'ALL', messageType: 'ALL', dataItemCode: '', failureStage: '', startTime: '', endTime: ''}))
 }
 function selectMessageStatus(status) { messageStatus.value = status }
 function handleMessageStatusKey(event, status) {
@@ -140,7 +159,7 @@ function handleMessageStatusKey(event, status) {
 <template>
   <main class="page execution-log-page">
     <p v-if="props.selectedExecutionId && !selectedExecution && !isPending('query:executions')" class="notice negative">未找到该执行记录，可能已不可访问。<button class="link-button" @click="closeExecution">返回执行列表</button></p>
-    <div v-show="!selectedExecution">
+    <div v-show="!selectedExecution" class="execution-list">
     <div class="page-heading">
       <div>
         <h1>执行记录</h1>
@@ -161,7 +180,7 @@ function handleMessageStatusKey(event, status) {
     </section>
 
     <section class="card execution-card">
-        <ListFilters>
+        <ListFilters class="execution-filters">
           <label class="toolbar-field"><span>搜索记录</span><SearchInput v-model="keyword" class="execution-search" aria-label="搜索执行记录" placeholder="搜索任务、报文、Execution 或目标" /></label>
           <label class="toolbar-field"><span>执行状态</span><select v-model="executionStatus" class="status-select" aria-label="筛选执行状态">
             <option value="ALL">全部状态</option>
@@ -169,7 +188,15 @@ function handleMessageStatusKey(event, status) {
             <option value="PARTIAL_SUCCESS">部分成功</option>
             <option value="FAILED">失败</option>
           </select></label>
-          <button class="button secondary small" @click="clearExecutionFilters">清除筛选</button></ListFilters>
+          <label class="toolbar-field"><span>报文类型</span><select v-model="messageType" class="status-select"><option value="ALL">全部类型</option><option value="JSON">JSON 报文</option><option value="FILE">结构化 FILE</option><option value="UNSTRUCTURED_FILE">非结构化 FILE</option></select></label>
+          <label class="toolbar-field"><span>数据项</span><input v-model.trim="dataItemCode" placeholder="数据项编码"></label>
+          <label class="toolbar-field"><span>失败阶段</span><input v-model.trim="failureStage" placeholder="例如 COPY_UNSTRUCTURED_FILE"></label>
+          <label class="toolbar-field"><span>开始时间</span><input v-model="startTime" type="datetime-local"></label>
+          <div class="filter-action-group">
+            <label class="toolbar-field"><span>结束时间</span><input v-model="endTime" type="datetime-local"></label>
+            <button class="button secondary small" @click="clearExecutionFilters">清除筛选</button>
+          </div>
+        </ListFilters>
 
       <div class="table-scroll" :class="{'is-loading': isPending('query:executions')}">
         <table class="data-table execution-table">
@@ -205,10 +232,13 @@ function handleMessageStatusKey(event, status) {
         <DetailHeader eyebrow="目标投递报文" :title="detailMessage.id" :code="detailMessage.brokerMessageId || '未生成 Broker 消息 ID'" :description="detailMessage.target || '未记录投递目标'">
           <template #aside><StatusBadge :status="detailMessage.status"/></template>
         </DetailHeader>
-        <DetailGrid :columns="3"><div><dt>生成时间</dt><dd>{{ formatDateTime(detailMessage.generatedAt) }}</dd></div><div><dt>报文发布版本</dt><dd>{{ detailMessage.templateVersion ? `V${detailMessage.templateVersion}` : '历史记录未记录' }}</dd></div><div><dt>失败阶段</dt><dd>{{ detailMessage.failureStage || '无' }}</dd></div></DetailGrid>
+        <DetailGrid :columns="3"><div><dt>生成时间</dt><dd>{{ formatDateTime(detailMessage.generatedAt) }}</dd></div><div><dt>报文发布版本</dt><dd>{{ detailMessage.templateVersion ? `V${detailMessage.templateVersion}` : '历史记录未记录' }}</dd></div><div><dt>报文模板</dt><dd>{{ detailMessage.memberMessageName || detailMessage.messageTemplateId || '历史记录未记录' }}</dd></div><div><dt>处理方式</dt><dd>{{ detailMessage.processingMode === 'ORIGINAL_MESSAGE' ? '原报文直发' : '按配置生成' }}</dd></div><div><dt>正文 SHA-256</dt><dd><code>{{ detailMessage.payloadSha256 || '历史记录未记录' }}</code></dd></div><div><dt>失败阶段</dt><dd>{{ detailMessage.failureStage || '无' }}</dd></div></DetailGrid>
         <div v-if="detailMessage.status === 'FAILED'" class="execution-error"><b>{{ detailMessage.failureStage || '执行失败' }}</b><p>{{ readableError(detailMessage) }}</p></div>
-        <DetailSection title="最终报文内容" description="展示投递前最终生成的真实内容" collapsible open>
-          <pre v-if="detailMessage.payload" class="code-block">{{ detailMessage.payload }}</pre><div v-else class="payload-empty">失败发生在报文生成或 MQ 投递之前，没有可展示的最终报文内容。</div>
+        <DetailSection v-if="detailMessage.messageType === 'UNSTRUCTURED_FILE'" title="非结构化文件结果" description="二进制正文不在页面展示">
+          <DetailGrid :columns="2"><div><dt>源文件名</dt><dd>{{ detailMessage.sourceFileName || '未记录' }}</dd></div><div><dt>目标文件名</dt><dd>{{ detailMessage.targetFileName || '未记录' }}</dd></div><div><dt>源文件大小</dt><dd>{{ detailMessage.sourceFileSize ?? '未记录' }}</dd></div><div><dt>目标文件大小</dt><dd>{{ detailMessage.targetFileSize ?? '未记录' }}</dd></div><div><dt>文件内容</dt><dd>原样复制</dd></div></DetailGrid>
+        </DetailSection>
+        <DetailSection v-else title="最终报文内容" :description="detailMessage.processingMode === 'ORIGINAL_MESSAGE' ? '原报文直发：以下内容与发布版本原始字符序列一致' : '展示投递前最终生成的真实内容'" collapsible open>
+          <pre v-if="detailMessage.payload" class="code-block">{{ detailMessage.payload }}</pre><div v-else class="payload-empty">失败发生在报文生成或目标投递之前，没有可展示的最终报文内容。</div>
         </DetailSection>
       </div>
       <div v-else class="execution-detail unified-detail">
@@ -217,20 +247,20 @@ function handleMessageStatusKey(event, status) {
         </DetailHeader>
         <DetailGrid :columns="4" tone="blue">
           <div><dt>触发方式</dt><dd>{{ selectedExecution.triggerMode === 'SCHEDULED' ? '定时任务' : (selectedExecution.triggerMode === 'MANUAL_SPECIFIED' ? '指定时间执行' : '当前时间执行') }}</dd></div>
-          <div><dt>计划触发时间</dt><dd>{{ formatDateTime(selectedExecution.plannedTriggerAt) }}</dd></div>
-          <div><dt>业务基准时间</dt><dd>{{ formatDateTime(selectedExecution.businessBaseAt) }}</dd></div>
-          <div><dt>预报结束时间</dt><dd>{{ selectedExecution.periodEndAt ? formatDateTime(selectedExecution.periodEndAt) : '不适用' }}</dd></div>
+          <div><dt>当前时间</dt><dd>{{ formatDateTime(selectedExecution.plannedTriggerAt) }}</dd></div>
+          <div><dt>起报时间</dt><dd>{{ formatDateTime(selectedExecution.businessBaseAt) }}</dd></div>
+          <div><dt>预报时间</dt><dd>{{ selectedExecution.periodEndAt ? formatDateTime(selectedExecution.periodEndAt) : '不适用' }}</dd></div>
         </DetailGrid>
         <DetailSection title="执行证据链" description="按真实执行结果标记完成节点和首个失败阶段">
           <section class="evidence-chain" aria-label="Execution 执行证据链"><div class="evidence-heading"><span>{{ selectedExecution.status === 'SUCCESS' ? '投递成功' : selectedExecution.status === 'FAILED' ? '执行失败' : selectedExecution.status === 'PARTIAL_SUCCESS' ? '部分投递成功' : '执行状态待确认' }}</span><small>仅展示已有执行证据，未记录的阶段不代表已完成。</small></div><ol><li v-for="step in evidenceSteps" :key="step.key" :class="step.state"><i></i><div><b>{{ step.label }}</b><small>{{ step.hint }}</small></div></li></ol></section>
         </DetailSection>
         <div v-if="selectedExecution.errorSummary" class="execution-error"><b>执行失败原因</b><p>{{ selectedExecution.errorSummary }}</p></div>
-        <div v-if="selectedExecution.messageType === 'FILE'" class="notice">文件类报文展示最终 MQ 报文内容和生成后的文件地址，文件本体保存在报文配置所选的 OSS、OBS 或 HTTP 文件服务。</div>
+        <div v-if="['FILE','UNSTRUCTURED_FILE'].includes(selectedExecution.messageType)" class="notice">{{ selectedExecution.messageType === 'UNSTRUCTURED_FILE' ? '非结构化文件按字节原样复制，详情只展示文件名、路径和大小，不展示二进制正文。' : '结构化 FILE 展示最终外层报文和生成后的文件地址。' }}</div>
         <DetailSection title="逐目标投递明细" description="查看每个 MQ 目标的独立投递结果" :count="filteredMessages.length">
           <template #actions><div class="message-status-filter"><span>投递状态</span><div class="segmented" role="tablist" aria-label="筛选逐目标投递状态"><button v-for="item in [['ALL','全部'],['SUCCESS','成功'],['FAILED','失败']]" :key="item[0]" type="button" role="tab" :data-message-status="item[0]" :aria-selected="messageStatus === item[0]" :tabindex="messageStatus === item[0] ? 0 : -1" :class="{ active: messageStatus === item[0] }" @click="selectMessageStatus(item[0])" @keydown="handleMessageStatusKey($event, item[0])">{{ item[1] }}</button></div></div></template>
           <div v-if="isPending(`load-messages:${selectedExecution.id}`)" class="detail-loading"><i></i><span>正在读取逐目标投递结果…</span></div>
           <div v-else-if="messagesError" class="detail-error"><div><b>执行明细加载失败</b><p>{{ messagesError }}</p></div><button class="button secondary small" @click="reloadMessages">重新加载</button></div>
-          <div v-else class="table-scroll"><table class="data-table message-table"><thead><tr><th>Simulation Message ID</th><th>生成时间</th><th>MQ 投递目标</th><th>Broker 消息 ID</th><th>状态 / 错误</th><th>操作</th></tr></thead><tbody><tr v-for="item in filteredMessages" :key="item.recordId" :class="{ 'failed-row': item.status === 'FAILED' }"><td><b>{{ item.id }}</b></td><td>{{ formatDateTime(item.generatedAt) }}</td><td><span class="target-text" :title="item.target">{{ item.target }}</span></td><td><code v-if="item.brokerMessageId">{{ item.brokerMessageId }}</code><span v-else class="muted">未生成</span></td><td><StatusBadge :status="item.status"/><small v-if="item.status === 'FAILED'" class="inline-error"><b>{{ item.failureStage || '执行失败' }}</b>：{{ readableError(item) }}</small></td><td><button class="link-button" @click="detailMessage = item">报文详情</button></td></tr><tr v-if="!filteredMessages.length"><td colspan="6" class="empty-state">该执行批次暂无符合条件的投递明细。</td></tr></tbody></table></div>
+          <div v-else-if="messageGroups.length" class="message-groups"><section v-for="group in messageGroups" :key="group.key" class="message-group"><header v-if="group.key !== '__single__'"><b>{{ group.messageName || group.key }}</b><small>报文模板 {{ group.key }} · {{ group.items.length }} 个投递目标</small></header><div class="table-scroll"><table class="data-table message-table"><thead><tr><th>Simulation Message ID</th><th>生成时间</th><th>投递目标</th><th>Broker 消息 ID</th><th>状态 / 错误</th><th>操作</th></tr></thead><tbody><tr v-for="item in group.items" :key="item.recordId" :class="{ 'failed-row': item.status === 'FAILED' }"><td><b>{{ item.id }}</b></td><td>{{ formatDateTime(item.generatedAt) }}</td><td><span class="target-text" :title="item.target">{{ item.target }}</span></td><td><code v-if="item.brokerMessageId">{{ item.brokerMessageId }}</code><span v-else class="muted">未生成</span></td><td><StatusBadge :status="item.status"/><small v-if="item.status === 'FAILED'" class="inline-error"><b>{{ item.failureStage || '执行失败' }}</b>：{{ readableError(item) }}</small></td><td><button class="link-button" @click="detailMessage = item">报文详情</button></td></tr></tbody></table></div></section></div><div v-else class="empty-state">该执行批次暂无符合条件的投递明细。</div>
         </DetailSection>
       </div>
     </AppDetailPage>
@@ -239,6 +269,7 @@ function handleMessageStatusKey(event, status) {
 
 <style scoped>
 .execution-log-page { display: grid; gap: 20px; }
+.execution-list { width: 100%; min-width: 0; }
 .unified-detail { display: grid; gap: 16px; }
 .detail-loading, .detail-error { display: flex; min-height: 84px; align-items: center; justify-content: center; gap: 12px; padding: 16px; border: 1px solid #f0f0f0; border-radius: 8px; color: #595959; background: #fafafa; font-size: 15px; }.detail-loading i { width: 17px; height: 17px; border: 2px solid #d9d9d9; border-top-color: #1677ff; border-radius: 50%; animation: detail-spin .8s linear infinite; }.detail-error { justify-content: space-between; border-color: #ffccc7; background: #fff2f0; }.detail-error b { color: #cf1322; font-size: 15px; }.detail-error p { margin: 3px 0 0; color: #a8071a; font-size: 13px; }
 @keyframes detail-spin { to { transform: rotate(360deg); } }
@@ -250,13 +281,20 @@ function handleMessageStatusKey(event, status) {
 .summary-card.success strong { color: #36a269; }
 .summary-card.danger { border-top-color: var(--amber); }
 .summary-card.danger strong { color: #e45d5d; }
-.execution-card { overflow: hidden; }
+.execution-card { width: 100%; min-width: 0; overflow: hidden; }
 .execution-pagination { border-top: 1px solid #edf0f5; }
 .execution-heading { align-items: flex-end; gap: 20px; }
 .toolbar { display: flex; align-items: center; gap: 10px; }
 .toolbar-field { display: grid; gap: 6px; color: #5f7087; font-size: 13px; font-weight: 650; }
 .execution-search { width: 320px; }
 .status-select { width: 130px; height: 38px; padding: 0 10px; border: 1px solid #dcdfe6; border-radius: 4px; color: #606266; background: #fff; }
+.execution-filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); align-items: end; }
+.execution-filters :deep(label), .execution-filters :deep(.search-input), .execution-filters :deep(select), .execution-filters :deep(input) { width: 100%; }
+.execution-filters :deep(input) { box-sizing: border-box; height: 38px; min-width: 0; padding: 0 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #262626; font: inherit; }
+.execution-filters :deep(input:hover) { border-color: #4096ff; }
+.execution-filters :deep(input:focus-visible) { outline: 2px solid #1677ff; outline-offset: 2px; }
+.filter-action-group { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 10px; min-width: 0; }
+.filter-action-group .button { min-height: 38px; }
 .execution-table { width: 100%; min-width: 1060px; table-layout: fixed; }
 .execution-table .batch-col { width: 170px; }.execution-table .resource-col { width: 230px; }.execution-table .target-col { width: auto; }.execution-table .result-col { width: 150px; }.execution-table .error-col { width: 190px; }.execution-table .action-col { width: 96px; }
 .execution-table th, .execution-table td { padding: 15px 18px; vertical-align: middle; }
@@ -275,11 +313,11 @@ function handleMessageStatusKey(event, status) {
 .route-instance { color: #365b86 !important; font-weight: 650; }
 .route-topic { color: #1769c2 !important; }.route-more { display: block; margin-top: 5px; color: #718096; font-size: 12px; }
 .result-cell > small { display: flex; align-items: center; gap: 5px; margin-top: 7px; color: #7c899b; font-size: 12px; white-space: nowrap; }.result-cell > small b { color: #52647b; }.result-cell > small b.has-failure { color: #cf4d59; }.result-cell > small i { width: 1px; height: 11px; background: #d9e0e9; }
-.exception-cell span { display: -webkit-box; overflow: hidden; color: #c84d57; font-size: 12px; line-height: 1.55; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }.exception-cell .muted { color: #a4adbb; }
+.exception-cell span { display: -webkit-box; overflow: hidden; color: #c84d57; font-size: 12px; line-height: 1.55; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }.exception-cell .muted { color: #667085; }
 .action-column, .action-cell { text-align: center !important; }.action-cell .link-button { white-space: nowrap; }
 .target-text { display: block; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .error-summary { display: -webkit-box; max-width: 300px; overflow: hidden; color: #d94848; line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
-.muted { color: #a4adbb; }
+.muted { color: #667085; }
 .failed-row { background: #fffafa; }
 .execution-overview, .message-metadata { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); overflow: hidden; border: 1px solid #ebeef5; border-radius: 4px; background: #fafafa; }
 .execution-overview > div, .message-metadata > div { min-height: 74px; padding: 14px 16px; border-right: 1px solid #e8edf4; }
@@ -318,19 +356,24 @@ function handleMessageStatusKey(event, status) {
 .segmented button { padding: 6px 14px; border: 0; border-radius: 3px; color: #606266; background: transparent; cursor: pointer; }
 .segmented button.active { color: #2678d8; background: #fff; box-shadow: 0 1px 4px rgba(31, 55, 90, .12); }
 .message-status-filter { display: flex; align-items: center; gap: 9px; }.message-status-filter > span { color: #65758b; font-size: 13px; font-weight: 650; white-space: nowrap; }
+.message-groups { display: grid; gap: 14px; }.message-group { overflow: hidden; border: 1px solid #e5eaf1; border-radius: 7px; }.message-group > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 14px; background: #f5f8fc; }.message-group > header b { color: #304762; }.message-group > header small { color: #7a889b; }
 .message-table code { color: #536175; font-size: 14px; }
 .inline-error { max-width: 320px; color: #d94848 !important; line-height: 1.5; }
 .payload-title { margin: 20px 0 10px; }
 .payload-empty { padding: 32px; border: 1px dashed #dcdfe6; border-radius: 4px; color: #909399; text-align: center; background: #fafafa; }
 .execution-detail .evidence-chain { margin: 0; padding: 0; border: 0; background: transparent; }.execution-detail .evidence-heading { justify-content: flex-end; }.execution-detail .evidence-chain b { font-size: 14px; }.message-detail-page .code-block { max-height: 56vh; margin: 0; border-radius: 6px; font-size: 14px; line-height: 1.65; }
-@media (max-width: 1100px) {
+@media (max-width: 1380px) {
   .summary-grid { grid-template-columns: 1fr; }
   .execution-heading, .toolbar { align-items: stretch; flex-direction: column; }
   .execution-search { width: 100%; }
+  .execution-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .execution-overview, .message-metadata { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 1100px) {
   .execution-table { min-width: 880px; }.execution-table .resource-col { width: 210px; }.execution-table .error-col, .execution-table .exception-column { display: none; }
 }
 @media (max-width: 600px) {
+  .execution-filters { grid-template-columns: 1fr; }
   .execution-overview, .message-metadata, .execution-time-audit { grid-template-columns: 1fr; }
   .execution-overview > div, .message-metadata > div, .execution-time-audit > div { border-right: 0; border-bottom: 1px solid #ebeef5; }
   .execution-overview > div:last-child, .message-metadata > div:last-child, .execution-time-audit > div:last-child { border-bottom: 0; }

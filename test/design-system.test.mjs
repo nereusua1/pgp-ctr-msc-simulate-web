@@ -32,10 +32,10 @@ test('全局截断文本提示层脱离滚动容器并保持在视口内', () =>
 test('列表筛选紧凑左对齐，条数选择仅在表格底部分页区', async () => {
   const execution = await readFile(new URL('../src/views/ExecutionLogView.vue', import.meta.url), 'utf8')
   for (const view of [taskView, messageView, dataItemView, componentView, execution]) {
-    assert.match(view, /<ListFilters>/)
+    assert.match(view, /<ListFilters(?:\s[^>]*)?>/)
     assert.match(view, /<ListPagination /)
     assert.ok(view.indexOf('<ListPagination ') > view.indexOf('</table>'))
-    assert.doesNotMatch(view.match(/<ListFilters>[\s\S]*?<\/ListFilters>/)?.[0] || '', /pageSize|每页条数/)
+    assert.doesNotMatch(view.match(/<ListFilters(?:\s[^>]*)?>[\s\S]*?<\/ListFilters>/)?.[0] || '', /pageSize|每页条数/)
   }
   const filters = await readFile(new URL('../src/components/ListFilters.vue', import.meta.url), 'utf8')
   assert.match(filters, /justify-content: flex-start/)
@@ -43,6 +43,15 @@ test('列表筛选紧凑左对齐，条数选择仅在表格底部分页区', as
   const pagination = await readFile(new URL('../src/components/ListPagination.vue', import.meta.url), 'utf8')
   assert.match(pagination, /aria-label="每页条数"/)
   assert.match(pagination, /focus-visible/)
+})
+
+test('执行筛选使用稳定响应式网格且主内容保持可用宽度', async () => {
+  const execution = await readFile(new URL('../src/views/ExecutionLogView.vue', import.meta.url), 'utf8')
+  assert.match(execution, /<ListFilters class="execution-filters">/)
+  assert.match(execution, /\.execution-filters \{[^}]*grid-template-columns: repeat\(4, minmax\(0, 1fr\)\)/s)
+  assert.match(execution, /@media \(max-width: 1380px\)[\s\S]*\.execution-filters \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/)
+  assert.match(execution, /@media \(max-width: 600px\)[\s\S]*\.execution-filters \{ grid-template-columns: 1fr;/)
+  assert.match(style, /\.content-shell \{[^}]*width: calc\(100% - var\(--nav-width\)\);[^}]*min-width: 0;/s)
 })
 
 test('数据列表采用可读字号和吸顶表头', () => {
@@ -213,7 +222,8 @@ test('时间变量绑定明确区分未替换状态并支持全选', () => {
   assert.match(messageView, /:indeterminate="someTimeFieldsSelected && !allTimeFieldsSelected"/)
   assert.match(messageView, /@change="toggleAllTimeBindings"/)
   assert.match(messageView, /return binding \? timeStrategyLabel\(binding\) : '不替换'/)
-  assert.match(messageView, /timeStrategiesForPath\(field\.path\)/)
+  assert.match(messageView, /timeStrategiesForPath\(field\.path, form\.businessType\)/)
+  assert.match(messageView, /@change="normalizeBindingsForBusinessType"/)
 })
 
 test('默认投递 Topic 支持模糊建议与手动输入', () => {
@@ -236,6 +246,12 @@ test('默认投递 Producer Group 同步支持模糊建议与手动输入', () =
   assert.doesNotMatch(messageView, /Producer Group<select/)
 })
 
+test('新增投递实例时 Group 和 Topic 保持为空等待用户选择', () => {
+  assert.match(messageView, /targets\.push\(\{ targetId: createRequestId\(\), componentId: component\.id, type: component\.type \|\| 'ROCKETMQ', producerGroup: '', topic: '' \}\)/)
+  assert.doesNotMatch(messageView, /producerGroup: component\.type === 'DATABASE_MESSAGE_TABLE'/)
+  assert.doesNotMatch(messageView, /topic: topicsOf\(component\)\[0\]/)
+})
+
 test('顶栏提供可通过快捷键唤起的全局搜索命令面板', async () => {
   const component = await readFile(new URL('../src/components/GlobalSearch.vue', import.meta.url), 'utf8')
   assert.match(appView, /<GlobalSearch/)
@@ -245,6 +261,8 @@ test('顶栏提供可通过快捷键唤起的全局搜索命令面板', async ()
   assert.match(component, /收藏/)
   assert.match(component, /快捷动作/)
   assert.match(component, /statusMeta\(item\.status\)/)
+  assert.match(component, /aria-activedescendant/)
+  assert.match(component, /returnFocusElement/)
   assert.match(style, /\.command-panel/)
 })
 
@@ -273,6 +291,37 @@ test('所有复选框使用统一的 Ant Design 风格状态', () => {
   assert.match(style, /input\[type='checkbox'\]:focus-visible/)
   assert.match(style, /input\[type='checkbox'\]:disabled/)
   assert.match(taskView, /:indeterminate="batchIds\.length > 0/)
+})
+
+test('任务配置使用可搜索勾选列表并就近展示执行顺序', () => {
+  const pickerIndex = taskView.indexOf('class="message-picker-results"')
+  const orderIndex = taskView.indexOf('class="task-message-order"')
+  const configurationIndex = taskView.indexOf('class="form-grid task-configuration-grid"')
+  assert.ok(pickerIndex >= 0)
+  assert.ok(orderIndex > pickerIndex)
+  assert.ok(configurationIndex > orderIndex)
+  assert.match(taskView, /role="group" aria-label="选择要执行的报文"/)
+  assert.match(taskView, /type="checkbox" :checked="isTaskMessageSelected\(item\.id\)" @change="toggleTaskMessage\(item\.id\)"/)
+  assert.match(taskView, /\{\{ elementSummaryOf\(item\) \}\}/)
+  assert.match(taskView, /const messagePageSize = 12/)
+  assert.match(taskView, /class="message-picker-pagination" aria-label="候选报文分页"/)
+  assert.match(taskView, /watch\(\[dataItemFilter, dataSourceFilter\], \(\) => \{ messagePage\.value = 1 \}\)/)
+  assert.match(taskView, /<AppDetailPage v-if="canManage && \(isCreateRoute \|\| \(routeEdit && selected\)\)"/)
+  assert.doesNotMatch(taskView, /:is="routeEdit \? AppDetailPage : AppModal"/)
+  assert.doesNotMatch(taskView, /<label>添加报文<select/)
+  assert.match(taskView, /\.query-fields \{[\s\S]*grid-template-columns: repeat\(2, minmax\(240px, 360px\)\);[\s\S]*justify-content: start;/)
+  assert.match(taskView, /\.task-configuration-grid \{[^}]*width: min\(100%, 744px\);[^}]*grid-template-columns: repeat\(2, minmax\(240px, 360px\)\);/s)
+  assert.match(taskView, /\.task-configuration-grid > label \{[^}]*font-size: 15px;/s)
+  assert.match(taskView, /\.task-configuration-grid > label input, \.task-configuration-grid > label select \{[^}]*height: 44px;[^}]*font-size: 15px;/s)
+  assert.match(taskView, /\.cron-builder \{[^}]*width: min\(100%, 1080px\);/s)
+  assert.match(taskView, /\.cron-grid \{[^}]*grid-template-columns: repeat\(6, minmax\(0, 1fr\)\);/s)
+  assert.match(taskView, /\.cron-heading h3 \{[^}]*font-size: 19px;/s)
+  assert.match(taskView, /\.cron-unit \{[^}]*font-size: 15px;/s)
+  assert.match(taskView, /\.cron-select b \{[^}]*font-size: 15px;/s)
+  assert.match(taskView, /\.cron-summary b \{[^}]*font-size: 15px;/s)
+  assert.match(taskView, /\.task-message-list article small \{[^}]*font-size: 14px;/s)
+  assert.match(taskView, /@media \(max-width: 1180px\) \{[\s\S]*\.cron-grid \{ grid-template-columns: repeat\(3, minmax\(0, 1fr\)\); \}/)
+  assert.match(taskView, /\.execution-window-editor \{[^}]*width: min\(100%, 1080px\);/s)
 })
 
 test('报文列表行内提供复制和简单预生成', () => {

@@ -3,6 +3,8 @@ import {createRequestId} from './request-id.mjs'
 
 let unauthorizedHandler = () => {
 }
+let sessionActivityHandler = () => {
+}
 
 const request = async (path, options = {}) => {
     const response = await fetch(`/api${path}`, {
@@ -17,10 +19,16 @@ const request = async (path, options = {}) => {
         if (response.status === 401 && path !== '/auth/login') unauthorizedHandler()
         throw error
     }
-    return parseSuccessfulResponse(response)
+    const result = await parseSuccessfulResponse(response)
+    sessionActivityHandler(result)
+    return result
 }
 export const setUnauthorizedHandler = handler => {
     unauthorizedHandler = typeof handler === 'function' ? handler : () => {
+    }
+}
+export const setSessionActivityHandler = handler => {
+    sessionActivityHandler = typeof handler === 'function' ? handler : () => {
     }
 }
 export const login = credentials => request('/auth/login', {method: 'POST', body: JSON.stringify(credentials)})
@@ -38,9 +46,14 @@ export const executeTask = (id, body) => request(`/tasks/${id}:execute`, {method
 export const getExecutionRequest = requestId => request(`/executions/requests/${encodeURIComponent(requestId)}`)
 export const previewTaskTime = (id, body) => request(`/tasks/${id}:preview-time`, {method: 'POST', body: JSON.stringify(body)})
 /** 分页读取执行摘要；列表接口不返回完整报文正文。 */
-export const listExecutions = ({page = 1, size = 10, keyword = '', status = 'ALL'} = {}) => request(
-  `/executions?page=${page}&size=${size}&keyword=${encodeURIComponent(keyword)}&status=${encodeURIComponent(status)}`
-)
+export const listExecutions = ({page = 1, size = 10, keyword = '', status = 'ALL', messageType = 'ALL', dataItemCode = '', failureStage = '', startTime = '', endTime = ''} = {}) => {
+    const query = new URLSearchParams({page: String(page), size: String(size), keyword, status, messageType})
+    if (dataItemCode) query.set('dataItemCode', dataItemCode)
+    if (failureStage) query.set('failureStage', failureStage)
+    if (startTime) query.set('startTime', startTime)
+    if (endTime) query.set('endTime', endTime)
+    return request(`/executions?${query.toString()}`)
+}
 export const listExecutionMessages = executionId => request(`/executions/${encodeURIComponent(executionId)}/messages`)
 /** 指定窗口的真实总览聚合；仅支持 24h 与 7d，响应不包含报文正文。 */
 export const getExecutionAnalytics = (range = '24h') => request(`/executions/analytics?range=${encodeURIComponent(range)}`)

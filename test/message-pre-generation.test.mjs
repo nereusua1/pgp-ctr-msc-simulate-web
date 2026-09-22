@@ -67,6 +67,48 @@ test('FILE 文件名可使用业务基准日期零点且不改变时效编号', 
   assert.equal(result.fileName, 'MSP3_PMSC_SMMFC_RSM_LM10-50_CHN_20260908000000_00000-02400.csv')
 })
 
+test('FILE 预生成支持当前整点和第一个预报时间二级方式', () => {
+  const sourceName = 'weather_202501010000_202501010000.csv'
+  const result = preGenerateMessage({...template, type: 'FILE',
+    dataBinding: {elements: [{period: 24, period_interval: 60}]},
+    content: JSON.stringify({fileName: sourceName}),
+    fileGeneration: {sourceFileName: sourceName, fileNameBindings: [
+      {index: 0, format: 'yyyyMMddHHmm', sourceCategory: 'CURRENT_TIME', source: 'CURRENT_HOUR'},
+      {index: 1, format: 'yyyyMMddHHmm', sourceCategory: 'FORECAST_TIME', source: 'FORECAST_FIRST_TIME'}
+    ]}, bindings: []}, '2026-09-08T14:37:25')
+  assert.equal(result.fileName, 'weather_202609081400_202609081537.csv')
+})
+
+test('非结构化 FILE 预生成只更新目标文件引用并标记原样复制', () => {
+  const sourceName = 'radar_2025091708.nc'
+  const result = preGenerateMessage({...template, type:'UNSTRUCTURED_FILE', content:JSON.stringify({fileName:sourceName,filePath:`source/${sourceName}`,fileType:'NC',fileSize:0}), fileGeneration:{sourceFileName:sourceName,targetDirectory:'generated/radar',fileType:'NC',fileNamePath:'$.fileName',filePathPath:'$.filePath',fileTypePath:'$.fileType',fileSizePath:'$.fileSize',fileNameBindings:[{index:0,format:'yyyyMMddHH',source:'BUSINESS_BASE_TIME'}]}, bindings:[]}, '2026-09-17T08:00:00')
+  assert.equal(result.processingMode, '原样复制')
+  assert.equal(result.targetFileName, 'radar_2026091708.nc')
+  assert.equal(result.targetFilePath, 'generated/radar/radar_2026091708.nc')
+  assert.match(result.content, /generated\/radar\/radar_2026091708\.nc/)
+})
+
+test('Shapefile 预生成列出同一基础名的主文件和附属文件', () => {
+  const sourceName = 'area_2025091708.shp'
+  const result = preGenerateMessage({...template, type:'UNSTRUCTURED_FILE', content:JSON.stringify({fileName:sourceName,filePath:`source/${sourceName}`,fileType:'SHP',fileSize:0}), fileGeneration:{sourceFileName:sourceName,targetDirectory:'generated/shape',fileType:'SHAPEFILE',fileGroup:{sidecars:['.shp','.shx','.dbf','.prj']},fileNamePath:'$.fileName',filePathPath:'$.filePath',fileTypePath:'$.fileType',fileSizePath:'$.fileSize',fileNameBindings:[{index:0,format:'yyyyMMddHH',source:'BUSINESS_BASE_TIME'}]}, bindings:[]}, '2026-09-17T08:00:00')
+  assert.deepEqual(result.targetFiles, [
+    'generated/shape/area_2026091708.shp', 'generated/shape/area_2026091708.shx',
+    'generated/shape/area_2026091708.dbf', 'generated/shape/area_2026091708.prj'
+  ])
+})
+
+test('原报文直发预览保持字符序列并只计算 UTF-8 SHA-256', () => {
+  const original = '{\n  "messageId": "KEEP-ME",\n  "filePath": "archive/a.csv"\n}'
+  const result = preGenerateMessage({...template, type:'FILE', content:original,
+    fileGeneration:{schemaVersion:3, processingMode:'ORIGINAL_MESSAGE'},
+    bindings:[{path:'$.messageId', provider:'MESSAGE_ID'}]}, 'invalid-time')
+  assert.equal(result.content, original)
+  assert.equal(result.contentSha256, 'd47d9583fe17e56b65a1fa2e0a2a9c44340f619ec6235cbb8ee83e83e9c2e306')
+  assert.equal(result.messageId, '')
+  assert.equal(result.replacementCount, 0)
+  assert.equal(result.processingMode, '原报文直发')
+})
+
 test('复制报文固定生成草稿且默认移除投递目标', () => {
   const copy = copyMessageDraft(template, '气象报文 - 副本')
   assert.equal(copy.id, undefined)

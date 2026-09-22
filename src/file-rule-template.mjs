@@ -29,6 +29,14 @@ export function matchingFileRuleTemplates(templates = [], binding = {}) {
   return templates.filter(template => matchesFileRuleTemplate(template, binding))
 }
 
+/** 返回同一数据源和数据项下的已发布候选模板，供要素集合尚未选完整时直接采用。 */
+export function candidateFileRuleTemplates(templates = [], binding = {}) {
+  if (!binding.sourceCode || !binding.dataItemCode) return []
+  return templates.filter(template => template.status === 'PUBLISHED' && template.binding
+    && String(template.binding.sourceCode || '') === String(binding.sourceCode)
+    && String(template.binding.dataItemCode || '') === String(binding.dataItemCode))
+}
+
 /**
  * 将模板规则复制为报文内联快照，同时保留报文自己的存储类型和源文件地址。
  * 运行时只读取快照，模板后续升级不会静默改变已经发布的报文。

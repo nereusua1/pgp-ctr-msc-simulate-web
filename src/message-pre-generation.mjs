@@ -1,4 +1,8 @@
 import {createRequestId} from './request-id.mjs'
+import {sha256Utf8} from './content-sha256.mjs'
+import {isOriginalMessage} from './resource-adapter.mjs'
+import {normalizeFileGeneration, normalizeFileGroupExtensions} from './file-storage.mjs'
+import {normalizeTimeBinding} from './time-binding.mjs'
 
 const pad = value => String(value).padStart(2, '0')
 
@@ -54,6 +58,11 @@ function periodHours(template) {
   return values.length ? Math.max(...values) : 0
 }
 
+function periodIntervalMinutes(template) {
+  const values = (template.dataBinding?.elements || []).map(item => Number(item.periodInterval ?? item.period_interval)).filter(value => Number.isFinite(value) && value > 0)
+  return values.length ? Math.min(...values) : 0
+}
+
 function parseFileTime(value, pattern) {
   const parts = {yyyy: 1970, MM: 1, dd: 1, HH: 0, mm: 0, ss: 0}
   let cursor = 0
@@ -66,7 +75,7 @@ function parseFileTime(value, pattern) {
   return Number.isNaN(date.getTime()) || cursor > value.length ? null : date
 }
 
-function generatedFileName(sourceName, bindings, plannedAt, endAt) {
+function generatedFileName(sourceName, bindings, plannedAt, endAt, intervalMinutes = 0) {
   const name = String(sourceName || 'PRE_GENERATED_FILE.dat').split('/').pop()
   if (!bindings?.length) return name
   const matches = [...name.matchAll(/(?<!\d)((?:19|20)\d{4}(?:\d{2}){0,4})(?!\d)/g)]
@@ -75,7 +84,15 @@ function generatedFileName(sourceName, bindings, plannedAt, endAt) {
     const match = matches[Number(binding.index)]
     if (!match) continue
     let target = binding.source === 'PERIOD_END_TIME' ? endAt : plannedAt
-    if (binding.source === 'BUSINESS_DAY_START') target = new Date(plannedAt.getFullYear(), plannedAt.getMonth(), plannedAt.getDate())
+    if (binding.source === 'CURRENT_DAY' || binding.source === 'BUSINESS_DAY_START') {
+      target = new Date(plannedAt.getFullYear(), plannedAt.getMonth(), plannedAt.getDate())
+    }
+    if (binding.source === 'CURRENT_HOUR') {
+      target = new Date(plannedAt.getFullYear(), plannedAt.getMonth(), plannedAt.getDate(), plannedAt.getHours())
+    }
+    if (binding.source === 'DATA_INTERVAL_SEQUENCE' || binding.source === 'FORECAST_FIRST_TIME') {
+      target = new Date(plannedAt.getTime() + intervalMinutes * 60000)
+    }
     if (binding.source === 'PRESERVE_OFFSET') {
       const reference = bindings.find(item => Number(item.index) === Number(binding.relativeTo || 0)) || bindings[0]
       const oldReference = parseFileTime(matches[Number(reference.index)]?.[1] || '', reference.format)
@@ -102,7 +119,27 @@ function replaceFileReferences(value, fileName) {
   }
 }
 
+function joinTargetPath(directory, fileName) {
+  const prefix = String(directory || '').trim().replace(/\/+$/, '')
+  return prefix ? `${prefix}/${fileName}` : fileName
+}
+
+function replaceExtension(fileName, extension) {
+  const dot = String(fileName || '').lastIndexOf('.')
+  return dot > 0 ? `${fileName.slice(0, dot)}${extension}` : `${fileName}${extension}`
+}
+
 export function preGenerateMessage(template, plannedValue, now = new Date(), uuidFactory = createRequestId) {
+  if (isOriginalMessage(template)) {
+    const content = String(template.content || '')
+    if (!content.trim()) throw new Error('原报文正文不能为空')
+    return {
+      content, contentSha256: sha256Utf8(content), messageId: '', replacementCount: 0,
+      replacedPaths: [], warnings: [], fileName: '', plannedAt: '', businessBaseAt: '', periodEndAt: '',
+      generatedAt: formatTime(now), type: 'FILE', sourceFileName: '', targetFileName: '', targetFilePath: '',
+      processingMode: '原报文直发'
+    }
+  }
   const plannedAt = plannedValue ? new Date(plannedValue) : now
   if (Number.isNaN(plannedAt.getTime())) throw new Error('计划触发时间无效')
   let content
@@ -138,15 +175,32 @@ export function preGenerateMessage(template, plannedValue, now = new Date(), uui
     else warnings.push(`未找到绑定字段 ${binding.path}`)
   }
   let fileName = ''
-  if (template.type === 'FILE') {
+  let targetFiles = []
+  if (template.type === 'FILE' || template.type === 'UNSTRUCTURED_FILE') {
     const configuredName = template.fileGeneration?.sourceFileName || findFirstValue(content, 'fileName')
-    fileName = generatedFileName(configuredName, template.fileGeneration?.fileNameBindings, plannedAt, endAt)
-    replaceFileReferences(content, fileName)
+    fileName = generatedFileName(configuredName, template.fileGeneration?.fileNameBindings, plannedAt, endAt, periodIntervalMinutes(template))
+    if (template.type === 'UNSTRUCTURED_FILE') {
+      const generation = template.fileGeneration || {}
+      const targetPath = joinTargetPath(generation.targetDirectory, fileName)
+      const extensions = normalizeFileGroupExtensions(generation.fileGroup, generation.fileType)
+      targetFiles = extensions.length
+        ? extensions.map(extension => joinTargetPath(generation.targetDirectory, replaceExtension(fileName, extension)))
+        : [targetPath]
+      setPath(content, generation.fileNamePath || '$.fileName', fileName)
+      setPath(content, generation.filePathPath || '$.filePath', targetPath)
+      if (generation.fileTypePath) setPath(content, generation.fileTypePath, generation.fileType || 'OTHER')
+      replaceFileReferences(content, fileName)
+    } else replaceFileReferences(content, fileName)
   }
   return {
     content: JSON.stringify(content, null, 2), messageId, replacementCount, replacedPaths, warnings, fileName,
     plannedAt: formatTime(plannedAt), businessBaseAt: formatTime(plannedAt), periodEndAt: formatTime(endAt),
-    generatedAt: formatTime(now), type: template.type || 'JSON'
+    generatedAt: formatTime(now), type: template.type || 'JSON',
+    sourceFileName: template.fileGeneration?.sourceFileName || '',
+    targetFileName: fileName,
+    targetFilePath: template.type === 'UNSTRUCTURED_FILE' ? joinTargetPath(template.fileGeneration?.targetDirectory, fileName) : '',
+    targetFiles,
+    processingMode: template.type === 'UNSTRUCTURED_FILE' ? '原样复制' : (template.type === 'FILE' ? '结构化解析并替换时间字段' : '')
   }
 }
 
@@ -165,6 +219,13 @@ export function copyMessageDraft(template, name, includeDeliveryTargets = false)
   for (const key of ['id', 'code', 'createdAt', 'updatedAt', 'messages']) delete clone[key]
   clone.name = String(name || '').trim()
   clone.status = 'DRAFT'
+  delete clone.timePlan
+  if (Array.isArray(clone.bindings)) {
+    clone.bindings = clone.bindings.map(binding => normalizeTimeBinding(binding, clone.businessType || 'FORECAST'))
+  }
+  if (clone.fileGeneration && (clone.type === 'FILE' || clone.type === 'FILE_REFERENCE' || clone.type === 'UNSTRUCTURED_FILE')) {
+    clone.fileGeneration = normalizeFileGeneration(clone.fileGeneration, clone.type === 'UNSTRUCTURED_FILE' ? 'UNSTRUCTURED_FILE' : 'FILE')
+  }
   if (!includeDeliveryTargets) {
     clone.deliveryTargets = []
     clone.componentIds = []

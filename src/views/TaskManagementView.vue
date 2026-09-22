@@ -1,4 +1,5 @@
 <script setup>
+import {normalizeTaskForSave} from '../task-contract.mjs'
 import {useFormLeaveGuard} from '../form-leave-guard.mjs'
 import ListFilters from '../components/ListFilters.vue'
 import ListPagination from '../components/ListPagination.vue'
@@ -15,6 +16,7 @@ import DetailHeader from '../components/DetailHeader.vue'
 import DetailGrid from '../components/DetailGrid.vue'
 import DetailSection from '../components/DetailSection.vue'
 import {formatDateTime} from '../date-time.mjs'
+import {taskMessageIds} from '../message-references.mjs'
 
 const props = defineProps({
   tasks: {type: Array, default: () => []},
@@ -25,6 +27,7 @@ const props = defineProps({
   pendingActions: {type: Object, default: () => new Set()},
   canManage: {type: Boolean, default: false}
   ,routeId: {type: String, default: ''}
+  ,routeEdit: {type: Boolean, default: false}
   ,components: {type: Array, default: () => []}
 })
 const emit = defineEmits(['editing-state', 'create', 'run', 'preview-time', 'update', 'remove', 'load-messages', 'load-task-execution-overview', 'batch-update'])
@@ -39,11 +42,13 @@ const {keyword, status: statusFilter, page, pageSize} = useListState('tasks')
 const messageFilter = ref('ALL')
 const dataItemFilter = ref('')
 const dataSourceFilter = ref('')
+const messagePage = ref(1)
+const messagePageSize = 12
 const defaultExecutionWindow = () => ({type: 'UNBOUNDED', startDate: '', endDate: ''})
 const normalizeExecutionWindow = value => value?.type === 'DATE_RANGE'
   ? {type: 'DATE_RANGE', startDate: value.startDate || '', endDate: value.endDate || ''}
   : defaultExecutionWindow()
-const form = reactive({name: '', messageId: '', scheduleType: 'FIXED_RATE', schedule: '10', scheduleYear: '*', autoExecutionWindow: defaultExecutionWindow()})
+const form = reactive({name: '', targetType: 'MESSAGE', messageId: '', messageIds: [], failurePolicy: 'CONTINUE', scheduleType: 'FIXED_RATE', schedule: '10', scheduleYear: '*', autoExecutionWindow: defaultExecutionWindow()})
 const runForm = reactive({mode: 'MANUAL_CURRENT', plannedTriggerTime: ''})
 const timePreview = ref(null)
 const executionOverview = ref(null)
@@ -81,15 +86,19 @@ const cronDescription = computed(() => [
   cron.second === '*' ? '每秒' : (cron.second.startsWith('*/') ? optionLabel(secondOptions, cron.second) : `${cron.second} 秒`)
 ].join(' · '))
 const selected = computed(() => props.tasks.find(item => item.id === selectedId.value))
+const isCreateRoute = computed(() => props.routeId === 'new')
+const taskTemplates = task => taskMessageIds(task).map(id => props.templates.find(item => item.id === id)).filter(Boolean)
 const filteredTasks = computed(() => props.tasks.filter(task => (statusFilter.value === 'ALL' || task.status === statusFilter.value) &&
-  [task.name, props.templates.find(item => item.id === task.messageId)?.name].some(value => String(value || '').toLowerCase().includes(keyword.value.trim().toLowerCase()))))
+  [task.name, ...taskTemplates(task).map(item => item.name)].some(value => String(value || '').toLowerCase().includes(keyword.value.trim().toLowerCase()))))
 const totalPages = computed(() => Math.max(1, Math.ceil(filteredTasks.value.length / pageSize.value)))
 const visibleTasks = computed(() => filteredTasks.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
-const selectedTemplate = computed(() => props.templates.find(item => item.id === selected.value?.messageId))
-const currentTargets = computed(() => selectedTemplate.value?.deliveryTargets || [])
-const manualUnavailable = computed(() => !selectedTemplate.value ? '未找到关联报文模板' :
-  !currentTargets.value.length ? '报文模板尚未配置消息云投递目标' :
-  currentTargets.value.some(target => !props.components.some(item => item.id === target.componentId && item.status !== 'DISABLED')) ? '投递目标不存在或已停用' : '')
+const selectedTemplates = computed(() => taskTemplates(selected.value))
+const selectedTemplate = computed(() => selectedTemplates.value[0])
+const currentTargets = computed(() => selectedTemplates.value.flatMap(item => item.deliveryTargets || []))
+const manualUnavailable = computed(() => selectedTemplates.value.length !== taskMessageIds(selected.value).length ? '部分关联报文不存在' :
+  selectedTemplates.value.some(item => item.status !== 'PUBLISHED' && !item.hasPublishedVersion) ? '部分关联报文尚未发布' :
+  selectedTemplates.value.some(item => !(item.deliveryTargets || []).length) ? '部分报文尚未配置投递目标' :
+  currentTargets.value.some(target => !props.components.some(item => item.id === target.componentId)) ? '投递目标不存在' : '')
 function toggleBatch(id) {
   batchIds.value = batchIds.value.includes(id) ? batchIds.value.filter(value => value !== id) : [...batchIds.value, id]
 }
@@ -127,9 +136,40 @@ const matchesBinding = (template, dataItemSearch, dataSourceSearch) => {
 const filteredTemplates = computed(() => {
   const itemSearch = normalizedSearch(dataItemFilter.value)
   const sourceSearch = normalizedSearch(dataSourceFilter.value)
-  return props.templates.filter(item => matchesBinding(item, itemSearch, sourceSearch))
+  return props.templates.filter(item => (item.status === 'PUBLISHED' || item.hasPublishedVersion) && matchesBinding(item, itemSearch, sourceSearch))
 })
-const messageOptions = computed(() => filteredTemplates.value.slice(0, 50))
+const messageTotalPages = computed(() => Math.max(1, Math.ceil(filteredTemplates.value.length / messagePageSize)))
+const messageOptions = computed(() => filteredTemplates.value.slice((messagePage.value - 1) * messagePageSize, messagePage.value * messagePageSize))
+const selectedFormTemplates = computed(() => form.messageIds.map(id => props.templates.find(item => item.id === id)).filter(Boolean))
+const elementSummaryOf = template => {
+  const binding = bindingOf(template)
+  const elements = Array.isArray(binding.elements) && binding.elements.length ? binding.elements : (binding.elementCodes || [])
+  const labels = elements.map(item => typeof item === 'string' ? item : (item.name || item.code || '')).filter(Boolean)
+  if (!labels.length) return '未关联要素项'
+  const summary = labels.slice(0, 3).join('、')
+  return labels.length > 3 ? `${summary} 等 ${labels.length} 项` : summary
+}
+const isTaskMessageSelected = messageId => form.messageIds.includes(messageId)
+function addTaskMessage(messageId) {
+  if (!messageId || form.messageIds.includes(messageId)) return
+  form.messageIds.push(messageId)
+  form.messageId = form.messageIds[0] || ''
+}
+function removeTaskMessage(index) {
+  form.messageIds.splice(index, 1)
+  form.messageId = form.messageIds[0] || ''
+}
+function toggleTaskMessage(messageId) {
+  const index = form.messageIds.indexOf(messageId)
+  if (index >= 0) removeTaskMessage(index)
+  else addTaskMessage(messageId)
+}
+function moveTaskMessage(index, offset) {
+  const target = index + offset
+  if (target < 0 || target >= form.messageIds.length) return
+  const [messageId] = form.messageIds.splice(index, 1)
+  form.messageIds.splice(target, 0, messageId)
+}
 const scheduleText = task => {
   if (task.scheduleType === 'MANUAL') return '手工执行'
   if (task.scheduleType === 'CRON') return task.scheduleYear && task.scheduleYear !== '*' ? `${task.scheduleYear} 年 · ${task.schedule}` : task.schedule
@@ -192,17 +232,23 @@ function openCreate() {
   const template = null
   formError.value = ''
   cronExpressionError.value = ''
+  selectedId.value = ''
   dataItemFilter.value = ''
   dataSourceFilter.value = ''
+  messagePage.value = 1
   Object.assign(form, {
     name: '',
+    targetType: 'MESSAGE',
     messageId: template?.id || '',
+    messageIds: template?.id ? [template.id] : [],
+    failurePolicy: 'CONTINUE',
     scheduleType: 'FIXED_RATE',
     schedule: '10',
     scheduleYear: '*',
     autoExecutionWindow: defaultExecutionWindow()
   })
   dialog.value = 'create'
+  setRoute('tasks', 'new')
 }
 function handleGlobalCreate(event) { if (event.detail?.page === 'tasks') openCreate() }
 onMounted(() => window.addEventListener('global-create', handleGlobalCreate))
@@ -216,9 +262,13 @@ function openEdit(task) {
   const binding = bindingOf(template)
   dataItemFilter.value = binding.dataItemCode || binding.dataItemName || ''
   dataSourceFilter.value = binding.sourceCode || binding.sourceName || ''
+  messagePage.value = 1
   Object.assign(form, {
     name: task.name || '',
-    messageId: task.messageId || '',
+    targetType: 'MESSAGE',
+    messageId: taskMessageIds(task)[0] || '',
+    messageIds: [...taskMessageIds(task)],
+    failurePolicy: task.failurePolicy === 'STOP' ? 'STOP' : 'CONTINUE',
     scheduleType: task.scheduleType || 'FIXED_RATE',
     schedule: task.schedule || '',
     scheduleYear: task.scheduleYear || '*',
@@ -226,6 +276,12 @@ function openEdit(task) {
   })
   if (form.scheduleType === 'CRON') loadCronExpression(form.schedule, form.scheduleYear)
   dialog.value = 'edit'
+  setRoute('tasks', task.id, true)
+}
+
+function closeTaskEditor() {
+  dialog.value = ''
+  setRoute('tasks')
 }
 
 function submit() {
@@ -235,23 +291,27 @@ function submit() {
   }
   formError.value = taskFormError(form)
   if (formError.value) return
+  const taskForm = normalizeTaskForSave(form)
   if (dialog.value === 'edit' && selected.value) {
-    const updated = {...selected.value, ...form}
+    const updated = {...selected.value, ...taskForm}
     delete updated.componentId
     delete updated.producerGroup
     delete updated.topic
     emit('update', updated, result => {
-      if (result?.success) dialog.value = props.routeId ? 'detail' : ''
+      if (result?.success) { dialog.value = 'detail'; setRoute('tasks', selected.value.id) }
       else formError.value = result?.error || '保存失败，输入已保留'
     })
   } else {
-    emit('create', {...form, status: 'DRAFT'}, () => { dialog.value = '' }, error => { formError.value = error })
+    emit('create', {...taskForm, status: 'DRAFT'}, created => {
+      dialog.value = ''
+      setRoute('tasks', created?.id || '')
+    }, error => { formError.value = error })
   }
 }
 
 function openDetail(task) {
   selectedId.value = task.id
-  dialog.value = 'detail'
+  dialog.value = ''
   setRoute('tasks', task.id)
   executionOverview.value = null
   loadExecutionOverview(task.id)
@@ -348,20 +408,39 @@ function setTaskEnabled(task, enabled, closeDialog = false) {
   })
 }
 
-watch(() => props.selectedTaskId, id => {
-  if (id && props.tasks.some(item => item.id === id)) openDetail(props.tasks.find(item => item.id === id))
+watch(() => [props.routeId, props.routeEdit, props.tasks], ([id, edit]) => {
+  if (!id) {
+    if (dialog.value === 'detail' || dialog.value === 'edit') dialog.value = ''
+    selectedId.value = ''
+    executionOverview.value = null
+    return
+  }
+  if (id === 'new') {
+    selectedId.value = ''
+    if (props.canManage && dialog.value !== 'create') openCreate()
+    return
+  }
+  const task = props.tasks.find(item => item.id === id)
+  if (!task) return
+  if (edit && props.canManage) {
+    if (selectedId.value !== id || dialog.value !== 'edit') openEdit(task)
+    return
+  }
+  const changed = selectedId.value !== id
+  selectedId.value = id
+  dialog.value = 'detail'
+  if (changed || !executionOverview.value) {
+    executionOverview.value = null
+    loadExecutionOverview(id)
+  }
 }, {immediate: true})
-watch(() => props.routeId, id => {
-  if (!id && dialog.value === 'detail') dialog.value = ''
-})
-watch([dataItemFilter, dataSourceFilter], () => {
-  if (!filteredTemplates.value.some(item => item.id === form.messageId)) form.messageId = ''
-})
+watch([dataItemFilter, dataSourceFilter], () => { messagePage.value = 1 })
+watch(messageTotalPages, value => { if (messagePage.value > value) messagePage.value = value })
 watch(totalPages, value => { if (page.value > value) page.value = value })
 watch(cron, syncCronExpression, {deep: true})
 
 const {dirty: formDirty, confirmClose: confirmFormClose} = useFormLeaveGuard(
-  () => ['create', 'edit'].includes(dialog.value),
+  () => dialog.value === 'create' || (props.routeEdit && dialog.value === 'edit'),
   () => JSON.stringify({form, cron}),
   value => emit('editing-state', value)
 )
@@ -369,12 +448,13 @@ const {dirty: formDirty, confirmClose: confirmFormClose} = useFormLeaveGuard(
 
 <template>
   <main class="page">
-    <div v-show="!routeId" class="page-heading">
+    <template v-if="!routeEdit && !isCreateRoute">
+    <div class="page-heading">
       <div><h1>任务管理</h1>
         <p>任务配置报文、RocketMQ 投递目标与调度方式；执行结果来自后端实际投递记录。</p></div>
       <button v-if="canManage" class="button primary" @click="openCreate"><AppIcon name="plus" :size="16" />新建任务</button>
     </div>
-    <section v-show="!routeId" class="card task-list-card">
+    <section class="card task-list-card">
       <div v-if="canManage && batchIds.length" class="task-batch-actions">
         <span>已选当前页 {{ batchIds.length }} 个任务</span><button class="link-button" @click="batchIds = []">取消选择</button>
         <button class="link-button" :disabled="isPending('batch:tasks')" @click="batchIds = visibleTasks.map(item => item.id)">选择当前页</button>
@@ -392,7 +472,7 @@ const {dirty: formDirty, confirmClose: confirmFormClose} = useFormLeaveGuard(
           <thead>
           <tr>
             <th><input v-if="canManage" class="task-selection" type="checkbox" aria-label="选择当前页全部任务" :checked="visibleTasks.length > 0 && batchIds.length === visibleTasks.length" :indeterminate="batchIds.length > 0 && batchIds.length < visibleTasks.length" :disabled="!visibleTasks.length || isPending('batch:tasks')" @change="batchIds = $event.target.checked ? visibleTasks.map(item => item.id) : []">任务</th>
-            <th>关联报文</th>
+            <th>执行目标</th>
             <th class="responsive-low">调度</th>
             <th>状态</th>
             <th class="align-right">操作</th>
@@ -404,7 +484,7 @@ const {dirty: formDirty, confirmClose: confirmFormClose} = useFormLeaveGuard(
               <input v-if="canManage" class="task-selection" type="checkbox" :aria-label="'选择任务 ' + task.name" :checked="batchIds.includes(task.id)" :disabled="isPending('batch:tasks')" @change="toggleBatch(task.id)">
               <button class="management-primary task-name-button" @click="openDetail(task)">{{ task.name }}</button>
             </td>
-            <td class="related-message">{{ templates.find(item => item.id === task.messageId)?.name || '未关联报文' }}</td>
+            <td class="related-message"><span v-if="taskTemplates(task).length">{{ taskTemplates(task).map(item => item.name).join('、') }}</span><span v-else>未关联报文</span><small>{{ taskMessageIds(task).length }} 份报文</small></td>
             <td class="responsive-low"><code class="schedule-value">{{ scheduleText(task) }}</code><small v-if="task.scheduleType !== 'MANUAL'" class="execution-window-value">{{ executionWindowText(task) }}</small></td>
             <td>
               <StatusBadge :status="task.status"/>
@@ -429,11 +509,13 @@ const {dirty: formDirty, confirmClose: confirmFormClose} = useFormLeaveGuard(
       </div>
       <ListPagination v-model:page="page" v-model:page-size="pageSize" :total="filteredTasks.length" :total-pages="totalPages" />
     </section>
+    </template>
 
-    <p v-if="routeId && !selected" class="notice negative">任务不存在或暂时无法读取。<button class="link-button" @click="setRoute('tasks')">返回任务列表</button></p>
-    <AppModal v-if="canManage && (dialog === 'create' || dialog === 'edit')"
-              :title="dialog === 'edit' ? `修改任务 · ${selected?.name}` : '新建任务'" @close="dialog = ''" :before-close="confirmFormClose">
+    <p v-if="routeId && routeId !== 'new' && !selected" class="notice negative">任务不存在或暂时无法读取。<button class="link-button" @click="setRoute('tasks')">返回任务列表</button></p>
+    <AppDetailPage v-if="canManage && (isCreateRoute || (routeEdit && selected))"
+              :title="isCreateRoute ? '新建任务' : `配置任务 · ${selected?.name}`" @close="closeTaskEditor" :before-close="confirmFormClose">
       <p v-if="formDirty" class="muted" role="status">有未保存修改</p><p v-if="formError" role="alert" class="notice">{{ formError }}</p>
+      <div class="notice subtle">任务按下方顺序执行一份或多份报文。同一数据项需要不同执行时间时，请分别创建任务并选择对应报文。</div>
       <section class="message-query">
         <div class="query-heading">
           <div><h3>筛选报文</h3>
@@ -444,17 +526,26 @@ const {dirty: formDirty, confirmClose: confirmFormClose} = useFormLeaveGuard(
         </label><label><span>数据源</span>
           <SearchInput v-model="dataSourceFilter" aria-label="按数据源查询报文" placeholder="输入编码或中文名称" />
         </label></div>
+        <div v-if="messageOptions.length" class="message-picker-results" role="group" aria-label="选择要执行的报文">
+          <label v-for="item in messageOptions" :key="item.id" class="message-picker-option" :class="{selected: isTaskMessageSelected(item.id)}">
+            <input type="checkbox" :checked="isTaskMessageSelected(item.id)" @change="toggleTaskMessage(item.id)">
+            <span class="message-picker-copy">
+              <b>{{ item.name }}</b>
+              <small>{{ bindingOf(item).sourceName || bindingOf(item).sourceCode || '未关联数据源' }} · {{ bindingOf(item).dataItemName || bindingOf(item).dataItemCode || '未关联数据项' }}</small>
+              <small>{{ elementSummaryOf(item) }}</small>
+            </span>
+            <span class="message-picker-state">{{ isTaskMessageSelected(item.id) ? '已选择' : '选择' }}</span>
+          </label>
+        </div>
+        <div v-else class="message-picker-empty">没有匹配的已发布报文，请调整筛选条件。</div>
+        <div v-if="filteredTemplates.length" class="message-picker-pagination" aria-label="候选报文分页">
+          <span>第 {{ messagePage }} / {{ messageTotalPages }} 页 · 当前 {{ messageOptions.length }} 份，共 {{ filteredTemplates.length }} 份</span>
+          <div><button type="button" class="button secondary small" :disabled="messagePage === 1" @click="messagePage -= 1">上一页</button><button type="button" class="button secondary small" :disabled="messagePage === messageTotalPages" @click="messagePage += 1">下一页</button></div>
+        </div>
+        <section class="task-message-order"><div class="query-heading"><div><h3>执行报文与顺序</h3><p>勾选后立即加入；上下移动决定同次任务内的执行顺序。</p></div><strong>{{ form.messageIds.length }} 份</strong></div><div v-if="selectedFormTemplates.length" class="task-message-list"><article v-for="(item, index) in selectedFormTemplates" :key="item.id"><span>{{ index + 1 }}</span><div><b>{{ item.name }}</b><small>{{ bindingOf(item).sourceName || bindingOf(item).sourceCode || '未关联数据源' }} · {{ bindingOf(item).dataItemName || bindingOf(item).dataItemCode || '未关联数据项' }} · {{ elementSummaryOf(item) }}</small></div><button type="button" class="link-button" :disabled="index === 0" @click="moveTaskMessage(index, -1)">上移</button><button type="button" class="link-button" :disabled="index === selectedFormTemplates.length - 1" @click="moveTaskMessage(index, 1)">下移</button><button type="button" class="link-button danger-text" @click="removeTaskMessage(index)">移除</button></article></div><div v-else class="message-order-empty">勾选上方报文后，将在这里显示执行顺序。</div></section>
       </section>
-      <div class="form-grid"><label>任务名称<input v-model="form.name"
-                                                   placeholder="输入任务名称"></label><label>报文<select
-          v-model="form.messageId" :disabled="!messageOptions.length">
-        <option value="" disabled>请选择报文模板</option>
-        <option v-for="item in messageOptions" :key="item.id" :value="item.id">{{ item.name }} ·
-          {{ bindingOf(item).dataItemName || bindingOf(item).dataItemCode || '未关联数据项' }} ·
-          {{ bindingOf(item).sourceName || bindingOf(item).sourceCode || '未关联数据源' }}
-        </option>
-      </select><small class="field-help">匹配 {{ filteredTemplates.length }} 份报文，单次最多展示 50
-        份</small></label><label>调度方式<select v-model="form.scheduleType" @change="onScheduleTypeChange">
+      <div class="form-grid task-configuration-grid"><label>任务名称<input v-model="form.name"
+                                                   placeholder="输入任务名称"></label><label>失败策略<select v-model="form.failurePolicy"><option value="CONTINUE">单份失败后继续</option><option value="STOP">遇到失败停止</option></select></label><label>调度方式<select v-model="form.scheduleType" @change="onScheduleTypeChange">
         <option value="FIXED_RATE">固定间隔</option>
         <option value="CRON">Cron</option>
         <option value="MANUAL">手工执行</option>
@@ -521,25 +612,25 @@ const {dirty: formDirty, confirmClose: confirmFormClose} = useFormLeaveGuard(
           ? `自动调度仅在 ${form.autoExecutionWindow.startDate} 至 ${form.autoExecutionWindow.endDate} 执行，包含首尾日期。`
           : '自动调度长期有效。' }}</p>
       </section>
-      <div class="notice subtle">MQ 实例、Producer Group 和 Topic 统一继承所选报文的默认投递目标，任务中不再重复配置。</div>
+      <div class="notice subtle">每份报文保留自己的文件规则和投递目标；任务只维护执行顺序、调度范围和失败策略。</div>
       <template #footer>
-        <button class="button secondary" @click="confirmFormClose() && (dialog = '')">取消</button>
-        <button class="button primary" :disabled="dialog === 'edit' ? isPending(`update:tasks:${selected?.id}`) : isPending('create:tasks')" @click="submit">{{ (dialog === 'edit' ? isPending(`update:tasks:${selected?.id}`) : isPending('create:tasks')) ? '正在提交…' : (dialog === 'edit' ? '保存修改' : '创建草稿') }}</button>
+        <button class="button secondary" @click="confirmFormClose() && closeTaskEditor()">取消</button>
+        <button class="button primary" :disabled="routeEdit ? isPending(`update:tasks:${selected?.id}`) : isPending('create:tasks')" @click="submit">{{ (routeEdit ? isPending(`update:tasks:${selected?.id}`) : isPending('create:tasks')) ? '正在提交…' : (routeEdit ? '保存修改' : '创建草稿') }}</button>
       </template>
-    </AppModal>
+    </AppDetailPage>
 
-    <AppDetailPage v-if="dialog === 'detail' && selected" title="任务详情" @close="dialog = ''; setRoute('tasks')">
+    <AppModal v-if="dialog === 'detail' && selected && !routeEdit" :title="`任务详情 · ${selected.name}`" wide @close="dialog = ''; setRoute('tasks')">
       <p class="notice">自动调度：{{ selected.status === 'ENABLED' ? '已启用' : '未启用' }}。手工执行：{{ manualUnavailable || '可进入预检' }}。自动执行有效期和停用状态均不限制历史补跑。</p>
       <div class="unified-detail task-detail">
-        <DetailHeader eyebrow="模拟任务" :title="selected.name" :code="selected.id" description="任务继承关联报文的全部投递目标，并按当前调度规则触发执行。">
+        <DetailHeader eyebrow="模拟任务" :title="selected.name" :code="selected.id" description="任务继承关联报文的投递目标，并按当前调度规则触发执行。">
           <template #aside><StatusBadge :status="selected.status"/><button class="button secondary small" :disabled="isTaskPending(selected)" @click="setTaskEnabled(selected, selected.status !== 'ENABLED')">{{ selected.status === 'ENABLED' ? '停用' : '启用' }}</button></template>
         </DetailHeader>
         <DetailGrid :columns="3">
-          <div><dt>关联报文</dt><dd>{{ selectedTemplate?.name || '未关联' }}</dd></div>
+          <div><dt>执行目标</dt><dd>{{ selectedTemplates.length ? selectedTemplates.map(item => item.name).join('、') : '未关联报文' }}</dd></div>
           <div><dt>调度方式</dt><dd>{{ selected.scheduleType === 'CRON' ? 'Cron 调度' : (selected.scheduleType === 'MANUAL' ? '手工执行' : '固定频率') }}</dd></div>
           <div><dt>调度规则</dt><dd><code class="detail-code">{{ scheduleText(selected) }}</code></dd></div>
           <div><dt>自动执行有效期</dt><dd>{{ selected.scheduleType === 'MANUAL' ? '不适用' : executionWindowText(selected) }}</dd></div>
-          <div><dt>投递策略</dt><dd>继承关联报文配置</dd></div>
+          <div><dt>报文失败策略</dt><dd>{{ selected.failurePolicy === 'STOP' ? '遇到失败停止' : '单份失败后继续' }}</dd></div>
           <div><dt>累计执行</dt><dd>{{ executionOverviewLoading ? '读取中…' : `${executionOverview?.total || 0} 次` }}</dd></div>
           <div><dt>最近执行</dt><dd>{{ latestExecution ? formatDateTime(latestExecution.startedAt) : '尚未执行' }}</dd></div>
         </DetailGrid>
@@ -566,11 +657,11 @@ const {dirty: formDirty, confirmClose: confirmFormClose} = useFormLeaveGuard(
         <button :class="['button', canManage ? 'secondary' : 'primary']" :disabled="isPending(`run:${selected.id}`)" @click="openHistorical(selected)">历史补跑</button>
         <button v-if="canManage" class="button primary" :disabled="isPending(`run:${selected.id}`)" @click="openRun(selected)"><AppIcon name="play" :size="15" />立即执行</button>
       </template>
-    </AppDetailPage>
+    </AppModal>
 
     <AppModal v-if="dialog === 'run' && selected" :title="`${runForm.mode === 'MANUAL_SPECIFIED' ? '历史补跑' : '立即执行'} · ${selected.name}`" @close="dialog = 'detail'">
       <p v-if="runError" class="notice negative" role="alert">{{ runError }}</p>
-      <div class="run-summary"><span>报文模板</span><b>{{ selectedTemplate?.name || '未关联' }}</b><span>执行范围</span><b>整个任务 · {{ currentTargets.length }} 个消息云目标</b></div>
+      <div class="run-summary"><span>执行目标</span><b>{{ selectedTemplates.length ? selectedTemplates.map(item => item.name).join('、') : '未关联报文' }}</b><span>执行范围</span><b>{{ selectedTemplates.length }} 份报文 · {{ currentTargets.length }} 个投递目标</b></div>
       <p v-if="manualUnavailable" class="notice risk" role="alert">{{ manualUnavailable }}，本次不可执行。{{ canManage ? '请先检查关联模板和消息云组件。' : '请联系管理员检查配置。' }}</p>
       <details class="run-targets"><summary>查看消息云投递目标</summary><p v-for="target in currentTargets" :key="target.componentId + ':' + target.topic">{{ components.find(item => item.id === target.componentId)?.name || target.componentId }} · Group：{{ target.producerGroup }} · Topic：{{ target.topic }}</p></details>
       <p class="muted">使用当前报文配置执行，不修改原调度规则。{{ timePreview?.timeZone ? '业务时区：' + timePreview.timeZone : '服务端未提供业务时区，请核对部署配置。' }}</p>
@@ -599,13 +690,16 @@ const {dirty: formDirty, confirmClose: confirmFormClose} = useFormLeaveGuard(
         </section>
         <div class="preview-heading"><div><h3>2 · 核对业务时间</h3><p>预览结果与实际执行使用同一套后端规划逻辑。</p></div>
           <button class="button secondary small" :disabled="isPending(`preview-time:${selected.id}`)" @click="previewRunTime">{{ isPending(`preview-time:${selected.id}`) ? '正在计算…' : (timePreview ? '重新计算' : '计算时间') }}</button></div>
-        <div v-if="timePreview" class="time-preview-grid">
-          <div><span>数据类型</span><b>{{ timePreview.dataType === 'REALTIME' ? '实况' : (timePreview.dataType === 'FORECAST' ? '预报' : '未识别') }}</b></div>
-          <div><span>计划触发时间</span><b>{{ formatDateTime(timePreview.plannedTriggerAt) }}</b></div>
-          <div><span>业务基准时间</span><b>{{ formatDateTime(timePreview.businessBaseAt) }}</b></div>
-          <div><span>预报结束时间</span><b>{{ timePreview.periodEndAt ? formatDateTime(timePreview.periodEndAt) : '不适用' }}</b></div>
-          <div><span>数据间隔</span><b>{{ timePreview.periodIntervalMinutes ? `${timePreview.periodIntervalMinutes} 分钟` : '未配置' }}</b></div>
-          <div><span>预报时长</span><b>{{ timePreview.periodHours ? `${timePreview.periodHours} 小时` : '不适用' }}</b></div>
+        <div v-if="timePreview" class="time-preview-list">
+          <div v-for="(preview, index) in (timePreview.messagePreviews || [timePreview])" :key="index" class="time-preview-grid">
+            <strong v-if="(timePreview.messagePreviews || []).length > 1" class="time-preview-message">第 {{ index + 1 }} 份报文</strong>
+            <div><span>数据类型</span><b>{{ preview.dataType === 'REALTIME' ? '实况' : (preview.dataType === 'FORECAST' ? '预报' : '未识别') }}</b></div>
+            <div><span>当前时间</span><b>{{ formatDateTime(preview.plannedTriggerAt) }}</b></div>
+            <div><span>起报时间</span><b>{{ formatDateTime(preview.businessBaseAt) }}</b></div>
+            <div><span>预报时间</span><b>{{ preview.periodEndAt ? formatDateTime(preview.periodEndAt) : '不适用' }}</b></div>
+            <div><span>数据间隔</span><b>{{ preview.periodIntervalMinutes ? `${preview.periodIntervalMinutes} 分钟` : '未配置' }}</b></div>
+            <div><span>预报时长</span><b>{{ preview.periodHours ? `${preview.periodHours} 小时` : '不适用' }}</b></div>
+          </div>
         </div>
         <div v-else class="preview-empty">选择执行时间后点击“计算时间”，确认报文最终使用的时间范围。</div>
       </section>
@@ -687,13 +781,13 @@ const {dirty: formDirty, confirmClose: confirmFormClose} = useFormLeaveGuard(
 .task-table .related-message { color: #4f6178; font-size: 15px; font-weight: 450; }
 body .page .task-table code.schedule-value { color: #52647c; font-size: 14px; font-weight: 550; letter-spacing: 0; }
 .execution-window-value { display: block; margin-top: 4px; color: #7b8798; font-size: 12px; }
-.execution-window-editor { display: grid; gap: 16px; margin-top: 18px; padding: 18px; border: 1px solid #dfe5ee; border-radius: 12px; background: #f8fafc; }
+.execution-window-editor { display: grid; width: min(100%, 1080px); box-sizing: border-box; gap: 16px; margin-top: 18px; padding: 18px; border: 1px solid #dfe5ee; border-radius: 12px; background: #f8fafc; }
 .execution-window-heading { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, 220px); align-items: end; gap: 20px; }
 .execution-window-heading h3, .execution-window-heading p { margin: 0; }
 .execution-window-heading h3 { color: #26384f; font-size: 16px; line-height: 1.45; }
 .execution-window-heading p { max-width: 42ch; margin-top: 5px; color: #68778c; font-size: 13px; line-height: 1.6; }
-.execution-window-heading label, .execution-window-fields label { display: grid; min-width: 0; gap: 7px; color: #526078; font-size: 12px; font-weight: 650; }
-.execution-window-heading select, .execution-window-fields input { width: 100%; height: 40px; box-sizing: border-box; padding: 0 11px; border: 1px solid #d4dbe6; border-radius: 6px; outline: none; background: #fff; color: #303847; font-family: inherit; font-size: 14px; font-weight: 500; line-height: 1.4; transition: border-color .16s, box-shadow .16s; }
+.execution-window-heading label, .execution-window-fields label { display: grid; min-width: 0; gap: 7px; color: #526078; font-size: 14px; font-weight: 650; }
+.execution-window-heading select, .execution-window-fields input { width: 100%; height: 44px; box-sizing: border-box; padding: 0 12px; border: 1px solid #d4dbe6; border-radius: 6px; outline: none; background: #fff; color: #303847; font-family: inherit; font-size: 15px; font-weight: 500; line-height: 1.4; transition: border-color .16s, box-shadow .16s; }
 .execution-window-heading select:hover, .execution-window-fields input:hover { border-color: #aeb9c8; }
 .execution-window-heading select:focus, .execution-window-fields input:focus { border-color: #1677ff; box-shadow: 0 0 0 3px rgba(22, 119, 255, .1); }
 .execution-window-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
@@ -709,6 +803,21 @@ body .page .task-table code.schedule-value { color: #52647c; font-size: 14px; fo
 .detail-empty { display: grid; justify-items: center; gap: 4px; padding: 22px; color: #7e8ca0; text-align: center; }.detail-empty b { color: #42566f; font-size: 15px; }.detail-empty span { font-size: 13px; }
 .detail-danger-action { margin-right: auto; }
 @keyframes detail-spin { to { transform: rotate(360deg); } }
+.task-message-order { display: grid; gap: 12px; border-top: 1px solid #dfe7f1; background: #fafcff; }
+.task-message-order > .query-heading { padding: 13px 15px 0; border-bottom: 0; background: transparent; }
+.task-message-order > .query-heading h3 { font-size: 17px; }
+.task-message-order > .query-heading p, .task-message-order > .query-heading strong { font-size: 13px; }
+.task-message-list { display: grid; gap: 8px; padding: 0 15px 15px; }
+.task-message-list article { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto auto auto; align-items: center; gap: 10px; padding: 11px 12px; border: 1px solid #e5eaf1; border-radius: 6px; background: #fff; }
+.task-message-list article > span { display: grid; width: 24px; height: 24px; place-items: center; border-radius: 50%; background: #e6f4ff; color: #1677ff; font-size: 12px; font-weight: 700; }
+.task-message-list article > div { display: grid; min-width: 0; gap: 3px; }
+.task-message-list article b, .task-message-list article small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-message-list article b { font-size: 16px; line-height: 1.45; }
+.task-message-list article small { color: var(--muted); font-size: 14px; line-height: 1.5; }
+.message-order-empty { margin: 0 15px 15px; padding: 16px; border: 1px dashed #ccd7e5; border-radius: 6px; color: #7d8999; text-align: center; background: #fff; font-size: 13px; }
+.task-configuration-grid { width: min(100%, 744px); grid-template-columns: repeat(2, minmax(240px, 360px)); justify-content: start; }
+.task-configuration-grid > label { gap: 8px; color: #526078; font-size: 15px; font-weight: 650; }
+.task-configuration-grid > label input, .task-configuration-grid > label select { box-sizing: border-box; height: 44px; padding: 0 12px; font-size: 15px; }
 
 .delete-confirm > strong {
   display: block;
@@ -803,7 +912,8 @@ body .page .task-table code.schedule-value { color: #52647c; font-size: 14px; fo
 
 .query-fields {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(240px, 360px));
+  justify-content: start;
   gap: 14px;
   padding: 14px 15px 16px;
 }
@@ -820,6 +930,43 @@ body .page .task-table code.schedule-value { color: #52647c; font-size: 14px; fo
   font-weight: 500;
 }
 
+.message-picker-results {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(280px, 1fr));
+  gap: 8px;
+  max-height: 322px;
+  padding: 0 15px 15px;
+  overflow: auto;
+}
+
+.message-picker-option {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+  padding: 12px 13px;
+  border: 1px solid #dfe5ee;
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+  transition: border-color .16s, background .16s, box-shadow .16s;
+}
+
+.message-picker-option:hover { border-color: #a0cfff; }
+.message-picker-option:focus-within { border-color: #409eff; box-shadow: 0 0 0 3px rgba(64, 158, 255, .1); }
+.message-picker-option.selected { border-color: #79bbff; background: #f2f8ff; }
+.message-picker-option input { margin: 0; }
+.message-picker-copy { display: grid; min-width: 0; gap: 3px; }
+.message-picker-copy b, .message-picker-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.message-picker-copy b { color: #303847; font-size: 15px; font-weight: 650; }
+.message-picker-copy small { color: #768399; font-size: 13px; line-height: 1.5; }
+.message-picker-state { color: #8a96a7; font-size: 13px; white-space: nowrap; }
+.message-picker-option.selected .message-picker-state { color: #1677ff; font-weight: 600; }
+.message-picker-empty { margin: 0 15px 15px; padding: 24px 16px; border: 1px dashed #d6dee9; border-radius: 6px; color: #8792a3; text-align: center; background: #fafbfc; font-size: 13px; }
+.message-picker-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 15px 15px; color: #748196; font-size: 12px; }
+.message-picker-pagination > div { display: flex; gap: 8px; }
+
 .field-help {
   display: block;
   margin-top: 6px;
@@ -828,6 +975,8 @@ body .page .task-table code.schedule-value { color: #52647c; font-size: 14px; fo
 }
 
 .cron-builder {
+  width: min(100%, 1080px);
+  box-sizing: border-box;
   margin-top: 20px;
   padding: 0;
   overflow: hidden;
@@ -869,13 +1018,14 @@ body .page .task-table code.schedule-value { color: #52647c; font-size: 14px; fo
 
 .cron-heading h3 {
   color: #303133;
-  font-size: 16px;
+  font-size: 19px;
 }
 
 .cron-heading p {
   margin-top: 4px;
   color: #909399;
-  font-size: 12px;
+  font-size: 14px;
+  line-height: 1.5;
 }
 
 .cron-expression {
@@ -886,19 +1036,19 @@ body .page .task-table code.schedule-value { color: #52647c; font-size: 14px; fo
 
 .cron-expression label {
   color: #909399;
-  font-size: 11px;
+  font-size: 13px;
 }
 
 .cron-expression input {
   width: 280px;
-  height: 36px;
-  padding: 0 11px;
+  height: 42px;
+  padding: 0 12px;
   border: 1px solid #b8d8ff;
   border-radius: 4px;
   outline: 0;
   background: #fff;
   color: #2859a8;
-  font: 600 13px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font: 600 15px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .cron-expression input:focus {
@@ -909,8 +1059,8 @@ body .page .task-table code.schedule-value { color: #52647c; font-size: 14px; fo
 .cron-expression small {
   max-width: 360px;
   color: #909399;
-  font-size: 10px;
-  line-height: 1.4;
+  font-size: 12px;
+  line-height: 1.5;
   text-align: right;
 }
 
@@ -921,7 +1071,7 @@ body .page .task-table code.schedule-value { color: #52647c; font-size: 14px; fo
 
 .cron-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 12px;
   padding: 18px 20px 14px;
 }
@@ -935,7 +1085,7 @@ body .page .task-table code.schedule-value { color: #52647c; font-size: 14px; fo
   border-radius: 4px;
   background: #fafbfc;
   color: #606266;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 500;
   transition: border-color .2s, box-shadow .2s, background .2s;
 }
@@ -949,7 +1099,7 @@ body .page .task-table code.schedule-value { color: #52647c; font-size: 14px; fo
 .cron-unit > span {
   display: flex;
   align-items: center;
-  min-height: 18px;
+  min-height: 20px;
 }
 
 .cron-select {
@@ -957,9 +1107,9 @@ body .page .task-table code.schedule-value { color: #52647c; font-size: 14px; fo
   display: flex;
   width: 100%;
   min-width: 0;
-  height: 38px;
+  height: 44px;
   align-items: center;
-  padding: 0 34px 0 12px;
+  padding: 0 36px 0 13px;
   border: 1px solid #dcdfe6;
   border-radius: 4px;
   background: #fff;
@@ -982,7 +1132,7 @@ body .page .task-table code.schedule-value { color: #52647c; font-size: 14px; fo
   display: block;
   overflow: hidden;
   color: #303133;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 400;
   line-height: 1.2;
   text-overflow: ellipsis;
@@ -1016,12 +1166,12 @@ body .page .task-table code.schedule-value { color: #52647c; font-size: 14px; fo
   border-radius: 4px;
   background: #e6f4ff;
   color: #337ecc;
-  font-size: 11px;
+  font-size: 13px;
 }
 
 .cron-summary b {
   color: #606266;
-  font-size: 12px;
+  font-size: 15px;
   font-weight: 500;
   line-height: 1.6;
   overflow-wrap: anywhere;
@@ -1030,8 +1180,12 @@ body .page .task-table code.schedule-value { color: #52647c; font-size: 14px; fo
 .cron-summary small {
   grid-column: 2;
   color: #a8abb2;
-  font-size: 11px;
+  font-size: 13px;
   line-height: 1.5;
+}
+
+@media (max-width: 1180px) {
+  .cron-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
 @media (max-width: 760px) {
@@ -1039,9 +1193,18 @@ body .page .task-table code.schedule-value { color: #52647c; font-size: 14px; fo
   .query-fields {
     grid-template-columns: 1fr;
   }
+  .message-picker-results, .task-configuration-grid {
+    grid-template-columns: 1fr;
+  }
+  .cron-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .message-picker-pagination { align-items: stretch; flex-direction: column; }
+  .message-picker-pagination .button { flex: 1; }
+  .task-configuration-grid { width: 100%; }
 }
 
 @media (max-width: 640px) {
+  .task-message-list article { grid-template-columns: 30px minmax(0, 1fr); }
+  .task-message-list article .link-button { grid-column: span 1; }
   .run-mode-grid { grid-template-columns: 1fr; }
   .time-preview-grid { grid-template-columns: 1fr; }
   .time-preview-grid > div { border-right: 0; border-bottom: 1px solid #e8edf4; }
@@ -1061,10 +1224,6 @@ body .page .task-table code.schedule-value { color: #52647c; font-size: 14px; fo
     justify-items: start;
   }
 
-  .cron-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
   .cron-summary {
     grid-template-columns: 1fr;
   }
@@ -1072,5 +1231,9 @@ body .page .task-table code.schedule-value { color: #52647c; font-size: 14px; fo
   .cron-summary small {
     grid-column: 1;
   }
+}
+
+@media (max-width: 440px) {
+  .cron-grid { grid-template-columns: 1fr; }
 }
 </style>

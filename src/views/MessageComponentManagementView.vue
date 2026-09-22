@@ -2,19 +2,19 @@
 import {useFormLeaveGuard} from '../form-leave-guard.mjs'
 import ListFilters from '../components/ListFilters.vue'
 import ListPagination from '../components/ListPagination.vue'
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, nextTick, reactive, ref, watch } from 'vue'
 import SearchInput from '../components/SearchInput.vue'
 import {useListState} from '../list-state.mjs'
 import AppModal from '../components/AppModal.vue'
 import AppIcon from '../components/AppIcon.vue'
-import StatusBadge from '../components/StatusBadge.vue'
 import DetailHeader from '../components/DetailHeader.vue'
 import DetailGrid from '../components/DetailGrid.vue'
 import DetailSection from '../components/DetailSection.vue'
 import TruncatedText from '../components/TruncatedText.vue'
 import CopyValue from '../components/CopyValue.vue'
-import { resetMessageComponentForCreate } from '../message-component-form.mjs'
+import { duplicateRoute, normalizeMessageComponentForSave, producerGroupError, resetMessageComponentForCreate, topicError } from '../message-component-form.mjs'
 import { formatDateTime } from '../date-time.mjs'
+import {tasksReferencingAnyMessage} from '../message-references.mjs'
 
 const props = defineProps({
   components: { type: Array, default: () => [] },
@@ -27,9 +27,9 @@ const props = defineProps({
 })
 const emit = defineEmits(['editing-state', 'create', 'update', 'remove', 'check-component'])
 const dialog = ref('')
-const {keyword, status, page, pageSize} = useListState('components')
+const {keyword, page, pageSize} = useListState('components')
 const filteredComponents = computed(() => props.components.filter(item =>
-  (status.value === 'ALL' || item.status === status.value) &&
+  (!item.type || item.type === 'ROCKETMQ') &&
   [item.name, namesrvAddrOf(item), ...(item.topics || [])].some(value => String(value || '').toLowerCase().includes(keyword.value.trim().toLowerCase()))))
 const totalPages = computed(() => Math.max(1, Math.ceil(filteredComponents.value.length / pageSize.value)))
 const visibleComponents = computed(() => filteredComponents.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
@@ -42,13 +42,23 @@ const addingKey = ref('')
 const editingKey = ref('')
 const editingIndex = ref(-1)
 const editingValue = ref('')
-const form = reactive({ id: '', code: null, name: '', namesrvAddr: '', instanceId: '', accessKey: '', secretKey: '', secretConfigured: false, producerGroups: [], topics: [], status: 'ENABLED' })
+const groupInput = ref(null)
+const topicInput = ref(null)
+const entryErrors = reactive({producerGroups: '', topics: ''})
+const duplicateEntries = reactive({producerGroups: '', topics: ''})
+const persistedGroups = ref(new Set())
+const form = reactive({ id: '', code: null, type: 'ROCKETMQ', name: '', namesrvAddr: '', instanceId: '', accessKey: '', secretKey: '', secretConfigured: false, producerGroups: [], topics: [], status: 'ENABLED' })
 const isPending = key => props.pendingActions.has(key)
 const referenceTemplates = computed(() => props.templates.filter(item => {
   const componentIds = Array.isArray(item.componentIds) && item.componentIds.length ? item.componentIds : [item.componentId]
   return componentIds.includes(selectedItem.value?.id) || item.deliveryTargets?.some(target => target.componentId === selectedItem.value?.id)
 }))
-const referenceTasks = computed(() => props.tasks.filter(item => item.componentId === selectedItem.value?.id || referenceTemplates.value.some(template => template.id === item.messageId)))
+const referenceTasks = computed(() => {
+  const templateIds = referenceTemplates.value.map(template => template.id)
+  const viaMessages = tasksReferencingAnyMessage(props.tasks, templateIds)
+  const direct = props.tasks.filter(item => item.componentId === selectedItem.value?.id)
+  return [...new Map([...direct, ...viaMessages].map(item => [item.id, item])).values()]
+})
 
 function producerGroupsOf(item) {
   if (Array.isArray(item?.producerGroups)) return item.producerGroups.filter(Boolean)
@@ -59,14 +69,24 @@ function namesrvAddrOf(item) {
   return item?.namesrvAddr || item?.nameServer || ''
 }
 
+function componentTypeLabel(item) {
+  return 'RocketMQ'
+}
+
+function componentAddress(item) {
+  return namesrvAddrOf(item)
+}
+
 function openCreate() {
   resetMessageComponentForCreate(form)
+  persistedGroups.value = new Set()
   resetEditorState()
   dialog.value = 'edit'
 }
 
 function openEdit(item) {
-  Object.assign(form, { ...item, namesrvAddr: namesrvAddrOf(item), secretKey: '', producerGroups: [...producerGroupsOf(item)], topics: [...(item.topics || [])] })
+  Object.assign(form, { ...item, type: 'ROCKETMQ', namesrvAddr: namesrvAddrOf(item), secretKey: '', producerGroups: [...producerGroupsOf(item)], topics: [...(item.topics || [])] })
+  persistedGroups.value = new Set(producerGroupsOf(item))
   resetEditorState()
   dialog.value = 'edit'
 }
@@ -97,16 +117,29 @@ function resetEditorState() {
   editingIndex.value = -1
   editingValue.value = ''
   formError.value = ''
+  entryErrors.producerGroups = ''
+  entryErrors.topics = ''
+  duplicateEntries.producerGroups = ''
+  duplicateEntries.topics = ''
 }
 
 function addEntry(key, draft, label) {
   const value = draft.value.trim()
-  if (!value) { formError.value = `请输入${label}`; return false }
-  if (form[key].some(item => item.trim() === value)) { formError.value = `${label}不能重复：${value}`; return false }
+  const validationError = key === 'producerGroups' ? producerGroupError(value) : topicError(value)
+  if (!value) { entryErrors[key] = `请输入${label}`; focusEntry(key); return false }
+  if (validationError) { entryErrors[key] = validationError; focusEntry(key); return false }
+  if (form[key].some(item => item.trim() === value)) {
+    duplicateEntries[key] = value
+    entryErrors[key] = `${label}已存在：${value}`
+    focusEntry(key)
+    return false
+  }
   form[key].push(value)
   draft.value = ''
-  addingKey.value = ''
+  entryErrors[key] = ''
+  duplicateEntries[key] = ''
   formError.value = ''
+  focusEntry(key)
   return true
 }
 
@@ -114,6 +147,11 @@ function addGroup() { addEntry('producerGroups', groupDraft, 'Producer Group') }
 function addTopic() { addEntry('topics', topicDraft, 'Topic') }
 
 function removeEntry(key, index) {
+  const value = form[key][index]
+  if (routeReferenceCount(key, value)) {
+    entryErrors[key] = `${key === 'producerGroups' ? 'Producer Group' : 'Topic'} 已被报文引用，不能删除：${value}`
+    return
+  }
   form[key].splice(index, 1)
   cancelEdit()
   formError.value = ''
@@ -125,6 +163,19 @@ function beginAdd(key) {
   else topicDraft.value = ''
   cancelEdit()
   formError.value = ''
+  entryErrors[key] = ''
+  duplicateEntries[key] = ''
+  focusEntry(key)
+}
+
+function focusEntry(key) {
+  nextTick(() => (key === 'producerGroups' ? groupInput.value : topicInput.value)?.focus())
+}
+
+function routeReferenceCount(key, value) {
+  const field = key === 'producerGroups' ? 'producerGroup' : 'topic'
+  return props.templates.filter(template => (template.deliveryTargets || []).some(target =>
+    target.componentId === form.id && target[field] === value)).length
 }
 
 function cancelAdd() {
@@ -135,6 +186,10 @@ function cancelAdd() {
 }
 
 function beginEdit(key, index) {
+  if (key === 'producerGroups' && persistedGroups.value.has(form[key][index])) {
+    entryErrors[key] = '已创建的 Producer Group 不能直接改名'
+    return
+  }
   editingKey.value = key
   editingIndex.value = index
   editingValue.value = form[key][index]
@@ -149,12 +204,21 @@ function cancelEdit() {
 
 function saveEdit(key, index, label) {
   const value = editingValue.value.trim()
-  if (!value) { formError.value = `${label}不能为空`; return }
+  const validationError = key === 'producerGroups' ? producerGroupError(value) : topicError(value)
+  if (!value) { entryErrors[key] = `${label}不能为空`; return }
+  if (validationError) { entryErrors[key] = validationError; return }
   if (form[key].some((item, itemIndex) => itemIndex !== index && item.trim() === value)) {
-    formError.value = `${label}不能重复：${value}`
+    duplicateEntries[key] = value
+    entryErrors[key] = `${label}已存在：${value}`
+    return
+  }
+  if (routeReferenceCount(key, form[key][index])) {
+    entryErrors[key] = `${label}已被报文引用，不能改名：${form[key][index]}`
     return
   }
   form[key][index] = value
+  entryErrors[key] = ''
+  duplicateEntries[key] = ''
   formError.value = ''
   cancelEdit()
 }
@@ -172,13 +236,25 @@ function submit() {
   if (!form.accessKey.trim()) { formError.value = '请输入 AccessKey'; return }
   if (!form.secretKey.trim() && !form.secretConfigured) { formError.value = '请输入 SecretKey'; return }
   if (!producerGroups.length) { formError.value = '至少配置一个 Producer Group'; return }
-  if (new Set(producerGroups).size !== producerGroups.length) { formError.value = 'Producer Group 不能重复'; return }
+  const duplicateGroup = duplicateRoute(producerGroups)
+  if (duplicateGroup) { duplicateEntries.producerGroups = duplicateGroup; entryErrors.producerGroups = `Producer Group 已存在：${duplicateGroup}`; focusEntry('producerGroups'); return }
+  const invalidGroup = producerGroups.map(value => producerGroupError(value)).find(Boolean)
+  if (invalidGroup) { entryErrors.producerGroups = invalidGroup; return }
   if (!topics.length) { formError.value = '至少配置一个 Topic'; return }
-  if (new Set(topics).size !== topics.length) { formError.value = 'Topic 不能重复'; return }
-  const item = { ...form, name: form.name.trim(), namesrvAddr: form.namesrvAddr.trim(), instanceId: form.instanceId.trim(), accessKey: form.accessKey.trim(), secretKey: form.secretKey, type: 'ROCKETMQ', producerGroups, topics }
-  delete item.producerGroup
-  delete item.nameServer
-  delete item.secretConfigured
+  const duplicateTopic = duplicateRoute(topics)
+  if (duplicateTopic) { duplicateEntries.topics = duplicateTopic; entryErrors.topics = `Topic 已存在：${duplicateTopic}`; focusEntry('topics'); return }
+  const invalidTopic = topics.map(value => topicError(value)).find(Boolean)
+  if (invalidTopic) { entryErrors.topics = invalidTopic; return }
+  const item = normalizeMessageComponentForSave({
+    ...form,
+    name: form.name.trim(),
+    namesrvAddr: form.namesrvAddr.trim(),
+    instanceId: form.instanceId.trim(),
+    accessKey: form.accessKey.trim(),
+    secretKey: form.secretKey,
+    producerGroups,
+    topics
+  })
   const saved = result => {
     if (result?.success === false) { formError.value = result.error || '保存失败，输入已保留'; return }
     dialog.value = ''
@@ -195,23 +271,22 @@ const {dirty: formDirty, confirmClose: confirmFormClose} = useFormLeaveGuard(
 
 <template>
   <main class="page">
-    <div class="page-heading"><div><h1>消息云组件</h1><p>维护 RocketMQ 实例鉴权、Producer Group 与 Topic，连接验证由后端使用真实凭证访问服务端。</p></div><button v-if="canManage" class="button primary" @click="openCreate"><AppIcon name="plus" :size="16" />新建消息云组件</button></div>
+    <div class="page-heading"><div><h1>消息组件</h1><p>统一维护 RocketMQ 投递目标，所有 JSON 和文件报文最终都通过消息组件发送。</p></div><button v-if="canManage" class="button primary" @click="openCreate"><AppIcon name="plus" :size="16" />新建消息组件</button></div>
     <section class="card instance-list-card">
       <ListFilters>
         <label>搜索组件<SearchInput v-model="keyword" aria-label="搜索组件" placeholder="名称、地址或 Topic" /></label>
-        <label>状态<select v-model="status"><option value="ALL">全部</option><option value="ENABLED">已启用</option><option value="DISABLED">已停用</option></select></label>
-        <button v-if="keyword || status !== 'ALL'" class="link-button" @click="keyword = ''; status = 'ALL'">清除筛选</button>
+        <button v-if="keyword" class="link-button" @click="keyword = ''">清除筛选</button>
       </ListFilters>
-      <div class="table-scroll"><table class="data-table management-table instance-table"><thead><tr><th>MQ 实例</th><th class="responsive-low">NAMESRV_ADDR</th><th class="responsive-low">Producer Group</th><th>Topic</th><th>状态</th><th class="align-right">操作</th></tr></thead><tbody>
+      <div class="table-scroll"><table class="data-table management-table instance-table"><thead><tr><th>组件</th><th>类型</th><th class="responsive-low">连接地址</th><th>Topic</th><th>最近检测</th><th class="align-right">操作</th></tr></thead><tbody>
         <tr v-for="item in visibleComponents" :key="item.id">
-          <td><button class="management-primary instance-name" @click="openDetail(item)">{{ item.name }}</button><small>{{ item.type }}</small></td>
-          <td class="responsive-low"><TruncatedText :text="namesrvAddrOf(item)" code copyable /></td>
-          <td class="responsive-low"><span v-if="producerGroupsOf(item).length" class="summary-chip">{{ producerGroupsOf(item)[0] }}</span><span v-if="producerGroupsOf(item).length > 1" class="more-count">+{{ producerGroupsOf(item).length - 1 }}</span><span v-if="!producerGroupsOf(item).length" class="muted">未配置</span></td>
+          <td><button class="management-primary instance-name" @click="openDetail(item)">{{ item.name }}</button><small>{{ item.id }}</small></td>
+          <td><span class="summary-chip">{{ componentTypeLabel(item) }}</span></td>
+          <td class="responsive-low"><TruncatedText :text="componentAddress(item)" code copyable /></td>
           <td><span class="count-summary"><b>{{ item.topics?.length || 0 }}</b> 个 Topic</span></td>
-          <td><StatusBadge :status="item.status" /><small>{{ connectionChecks[item.id + ':'] ? (connectionChecks[item.id + ':'].success ? '最近检测通过' : '最近检测失败') : '连接未检测' }}</small></td>
-          <td class="align-right"><div class="table-actions"><button v-if="canCheckConnection" class="link-button" :disabled="isPending(`check:${item.id}:`)" @click="emit('check-component', { id: item.id })">{{ isPending(`check:${item.id}:`) ? '测试中…' : '测试连接' }}</button><button class="link-button" @click="openDetail(item)">详情</button><button v-if="canManage" class="link-button" :disabled="isPending(`update:message-components:${item.id}`)" @click="openEdit(item)">修改</button><button v-if="canManage" class="link-button danger-text" :disabled="isPending(`remove:message-components:${item.id}`)" @click="openDelete(item)">删除</button></div></td>
+          <td><span :class="['status-badge', connectionChecks[item.id + ':']?.success ? 'positive' : (connectionChecks[item.id + ':'] ? 'negative' : 'neutral')]">{{ connectionChecks[item.id + ':'] ? (connectionChecks[item.id + ':'].success ? '检测通过' : '检测失败') : '尚未检测' }}</span></td>
+          <td class="align-right"><div class="table-actions"><button v-if="canCheckConnection && item.type === 'ROCKETMQ'" class="link-button" :disabled="isPending(`check:${item.id}:`)" @click="emit('check-component', { id: item.id })">{{ isPending(`check:${item.id}:`) ? '测试中…' : '测试连接' }}</button><button class="link-button" @click="openDetail(item)">详情</button><button v-if="canManage" class="link-button" :disabled="isPending(`update:message-components:${item.id}`)" @click="openEdit(item)">修改</button><button v-if="canManage" class="link-button danger-text" :disabled="isPending(`remove:message-components:${item.id}`)" @click="openDelete(item)">删除</button></div></td>
         </tr>
-        <tr v-if="!visibleComponents.length"><td colspan="6" class="empty-state"><template v-if="components.length">没有匹配的组件。<br><button class="link-button empty-state-action" @click="keyword = ''; status = 'ALL'">清除筛选</button></template><template v-else>还没有消息云组件。<br><button v-if="canManage" class="link-button empty-state-action" @click="openCreate">新建第一个组件</button></template></td></tr>
+        <tr v-if="!visibleComponents.length"><td colspan="6" class="empty-state"><template v-if="components.length">没有匹配的组件。<br><button class="link-button empty-state-action" @click="keyword = ''">清除筛选</button></template><template v-else>还没有消息云组件。<br><button v-if="canManage" class="link-button empty-state-action" @click="openCreate">新建第一个组件</button></template></td></tr>
       </tbody></table></div>
       <ListPagination v-model:page="page" v-model:page-size="pageSize" :total="filteredComponents.length" :total-pages="totalPages" />
     </section>
@@ -219,8 +294,8 @@ const {dirty: formDirty, confirmClose: confirmFormClose} = useFormLeaveGuard(
     <AppModal v-if="dialog === 'detail' && selectedItem" title="消息组件详情" wide @close="dialog = ''">
       <div class="notice"><b>最近一次连接检测</b><p>{{ connectionChecks[selectedItem.id + ':']?.message || '尚未检测连接' }}</p><small>{{ connectionChecks[selectedItem.id + ':']?.checkedAt || '' }}</small></div>
       <div class="component-detail unified-detail">
-        <DetailHeader eyebrow="RocketMQ 实例" :title="selectedItem.name" :code="selectedItem.id" description="受控管理连接参数、生产组和 Topic 路由。">
-          <template #aside><StatusBadge :status="selectedItem.status"/></template>
+        <DetailHeader :eyebrow="componentTypeLabel(selectedItem)" :title="selectedItem.name" :code="selectedItem.id" description="受控管理 RocketMQ 连接参数、生产组和 Topic 路由。">
+          <template #aside><span class="summary-chip">云 RocketMQ 配置</span></template>
         </DetailHeader>
         <DetailSection title="连接与鉴权" description="凭据默认脱敏，完整 SecretKey 不会由服务端回显">
           <DetailGrid :columns="2">
@@ -240,7 +315,7 @@ const {dirty: formDirty, confirmClose: confirmFormClose} = useFormLeaveGuard(
         </div>
         <DetailGrid :columns="2"><div><dt>创建时间</dt><dd>{{ formatDateTime(selectedItem.createdAt) }}</dd></div><div><dt>更新时间</dt><dd>{{ formatDateTime(selectedItem.updatedAt) }}</dd></div></DetailGrid>
       </div>
-      <template #footer><button v-if="canCheckConnection" class="button secondary" :disabled="isPending(`check:${selectedItem.id}:`)" @click="emit('check-component', { id: selectedItem.id })">{{ isPending(`check:${selectedItem.id}:`) ? '测试中…' : '测试连接' }}</button><button v-if="canManage" class="button primary" @click="openEdit(selectedItem)">修改配置</button></template>
+      <template #footer><button v-if="canCheckConnection && selectedItem.type === 'ROCKETMQ'" class="button secondary" :disabled="isPending(`check:${selectedItem.id}:`)" @click="emit('check-component', { id: selectedItem.id })">{{ isPending(`check:${selectedItem.id}:`) ? '测试中…' : '测试连接' }}</button><button v-if="canManage" class="button primary" @click="openEdit(selectedItem)">修改配置</button></template>
     </AppModal>
 
     <AppModal v-if="canManage && dialog === 'delete' && selectedItem" title="删除 MQ 实例" @close="dialog = ''">
@@ -250,47 +325,51 @@ const {dirty: formDirty, confirmClose: confirmFormClose} = useFormLeaveGuard(
       <template #footer><button class="button secondary" @click="dialog = ''">取消</button><button class="button danger" :disabled="referenceTemplates.length || referenceTasks.length || isPending(`remove:message-components:${selectedItem.id}`)" @click="confirmDelete">{{ isPending(`remove:message-components:${selectedItem.id}`) ? '正在删除…' : '确认删除' }}</button></template>
     </AppModal>
 
-    <AppModal v-if="canManage && dialog === 'edit'" :title="form.id ? '编辑 RocketMQ 组件' : '新建 RocketMQ 组件'" wide @close="dialog = ''" :before-close="confirmFormClose">
+    <AppModal v-if="canManage && dialog === 'edit'" :title="form.id ? '编辑消息组件' : '新建消息组件'" wide @close="dialog = ''" :before-close="confirmFormClose">
       <p v-if="formDirty" class="muted" role="status">有未保存修改</p>
       <section class="basic-panel">
         <div class="section-heading"><div><h3>基础配置与鉴权</h3><p>字段语义与 RocketMQ 官方配置一致；SecretKey 使用密码框输入且服务端不会回显。</p></div></div>
         <div class="form-grid three-column component-editor-base">
           <label>组件名称<input v-model="form.name" placeholder="例如 RocketMQ-测试"></label>
+          <label>组件类型<input value="RocketMQ" disabled></label>
           <label>NAMESRV_ADDR<input v-model="form.namesrvAddr" placeholder="例如 127.0.0.1:9876"></label>
           <label>INSTANCE_ID<input v-model="form.instanceId" placeholder="例如 MQ_INST_xxx"></label>
           <label>AccessKey<input v-model="form.accessKey" autocomplete="off" placeholder="请输入 AccessKey"></label>
           <label>SecretKey<input v-model="form.secretKey" type="password" autocomplete="new-password" :placeholder="form.secretConfigured ? '已配置，留空保持不变' : '请输入 SecretKey'"></label>
-          <label>状态<select v-model="form.status"><option value="ENABLED">已启用</option><option value="DISABLED">已停用</option></select></label>
         </div>
       </section>
       <div class="collection-grid">
         <section class="collection-panel">
           <div class="collection-heading"><div><h3>Producer Group <span class="count-tag">{{ form.producerGroups.length }}</span></h3><p>任务发送时从已配置的发送组中选择一个。</p></div><button v-if="addingKey !== 'producerGroups'" class="button primary small" @click="beginAdd('producerGroups')"><AppIcon name="plus" :size="14" />添加 Group</button></div>
-          <div v-if="addingKey === 'producerGroups'" class="collection-add"><input v-model="groupDraft" autofocus placeholder="输入 Producer Group" @keyup.enter="addGroup" @keyup.esc="cancelAdd"><button class="button primary" @click="addGroup">确认</button><button class="button secondary" @click="cancelAdd">取消</button></div>
+          <div v-if="addingKey === 'producerGroups'" class="collection-add"><input ref="groupInput" v-model="groupDraft" placeholder="输入 Producer Group" aria-describedby="group-rule group-error" @input="entryErrors.producerGroups = ''; duplicateEntries.producerGroups = ''" @keyup.enter="addGroup" @keyup.esc="cancelAdd"><button class="button primary" @click="addGroup">确认</button><button class="button secondary" @click="cancelAdd">取消</button></div>
+          <small id="group-rule" class="route-rule">以 GID_ 或 GID- 开头，仅支持字母、数字、短横线和下划线，长度 7～64；创建后不能改名。</small>
+          <p v-if="entryErrors.producerGroups" id="group-error" class="field-error" role="alert">{{ entryErrors.producerGroups }}</p>
           <div class="collection-list">
-            <div v-for="(group, index) in form.producerGroups" :key="`group-${index}`" class="collection-row">
+            <div v-for="(group, index) in form.producerGroups" :key="`group-${index}`" :class="['collection-row', { 'duplicate-route': duplicateEntries.producerGroups === group }]">
               <span class="row-index">{{ index + 1 }}</span>
               <template v-if="editingKey === 'producerGroups' && editingIndex === index"><input v-model="editingValue" autofocus aria-label="编辑 Producer Group" @keyup.enter="saveEdit('producerGroups', index, 'Producer Group')" @keyup.esc="cancelEdit"><button class="button primary small" @click="saveEdit('producerGroups', index, 'Producer Group')">保存</button><button class="button secondary small" @click="cancelEdit">取消</button></template>
-              <template v-else><code>{{ group }}</code><div class="row-actions"><button class="link-button" @click="beginEdit('producerGroups', index)">编辑</button><button class="link-button danger-text" @click="removeEntry('producerGroups', index)">删除</button></div></template>
+              <template v-else><code>{{ group }}</code><div class="row-actions"><button v-if="!persistedGroups.has(group)" class="link-button" @click="beginEdit('producerGroups', index)">编辑</button><span v-else class="locked-route">已创建</span><button class="link-button danger-text" :disabled="routeReferenceCount('producerGroups', group) > 0" @click="removeEntry('producerGroups', index)">删除</button></div></template>
             </div>
             <div v-if="!form.producerGroups.length" class="empty-state compact">尚未配置 Producer Group</div>
           </div>
         </section>
         <section class="collection-panel">
           <div class="collection-heading"><div><h3>Topic <span class="count-tag">{{ form.topics.length }}</span></h3><p>独立维护 Topic，并可验证真实 RocketMQ 路由。</p></div><button v-if="addingKey !== 'topics'" class="button primary small" @click="beginAdd('topics')"><AppIcon name="plus" :size="14" />添加 Topic</button></div>
-          <div v-if="addingKey === 'topics'" class="collection-add"><input v-model="topicDraft" autofocus placeholder="输入 Topic" @keyup.enter="addTopic" @keyup.esc="cancelAdd"><button class="button primary" @click="addTopic">确认</button><button class="button secondary" @click="cancelAdd">取消</button></div>
+          <div v-if="addingKey === 'topics'" class="collection-add"><input ref="topicInput" v-model="topicDraft" placeholder="输入 Topic" aria-describedby="topic-rule topic-error" @input="entryErrors.topics = ''; duplicateEntries.topics = ''" @keyup.enter="addTopic" @keyup.esc="cancelAdd"><button class="button primary" @click="addTopic">确认</button><button class="button secondary" @click="cancelAdd">取消</button></div>
+          <small id="topic-rule" class="route-rule">仅支持字母、数字、短横线和下划线，长度 3～64，不能以 CID 或 GID 开头。</small>
+          <p v-if="entryErrors.topics" id="topic-error" class="field-error" role="alert">{{ entryErrors.topics }}</p>
           <div class="collection-list">
-            <div v-for="(topic, index) in form.topics" :key="`topic-${index}`" class="collection-row">
+            <div v-for="(topic, index) in form.topics" :key="`topic-${index}`" :class="['collection-row', { 'duplicate-route': duplicateEntries.topics === topic }]">
               <span class="row-index">{{ index + 1 }}</span>
               <template v-if="editingKey === 'topics' && editingIndex === index"><input v-model="editingValue" autofocus aria-label="编辑 Topic" @keyup.enter="saveEdit('topics', index, 'Topic')" @keyup.esc="cancelEdit"><button class="button primary small" @click="saveEdit('topics', index, 'Topic')">保存</button><button class="button secondary small" @click="cancelEdit">取消</button></template>
-              <template v-else><code>{{ topic }}</code><div class="row-actions"><button class="link-button" :disabled="!form.id || isPending(`check:${form.id}:${topic.trim()}`)" @click="emit('check-component', { id: form.id, topic: topic.trim() })">{{ isPending(`check:${form.id}:${topic.trim()}`) ? '验证中…' : '验证' }}</button><button class="link-button" @click="beginEdit('topics', index)">编辑</button><button class="link-button danger-text" @click="removeEntry('topics', index)">删除</button></div></template>
+              <template v-else><code>{{ topic }}</code><div class="row-actions"><button class="link-button" :disabled="!form.id || isPending(`check:${form.id}:${topic.trim()}`)" @click="emit('check-component', { id: form.id, topic: topic.trim() })">{{ isPending(`check:${form.id}:${topic.trim()}`) ? '验证中…' : '验证' }}</button><button class="link-button" :disabled="routeReferenceCount('topics', topic) > 0" @click="beginEdit('topics', index)">编辑</button><button class="link-button danger-text" :disabled="routeReferenceCount('topics', topic) > 0" @click="removeEntry('topics', index)">删除</button></div></template>
             </div>
             <div v-if="!form.topics.length" class="empty-state compact">尚未配置 Topic</div>
           </div>
         </section>
       </div>
       <p v-if="formError" class="status-badge negative editor-error">{{ formError }}</p>
-      <template #footer><span class="save-hint">Group 和 Topic 的修改将在保存组件后生效</span><button class="button secondary" @click="confirmFormClose() && (dialog = '')">取消</button><button class="button primary" :disabled="form.id ? isPending(`update:message-components:${form.id}`) : isPending('create:message-components')" @click="submit">{{ (form.id ? isPending(`update:message-components:${form.id}`) : isPending('create:message-components')) ? '正在保存…' : '保存组件' }}</button></template>
+      <template #footer><span class="save-hint">密码不会回显；Group 和 Topic 的修改将在保存后生效</span><button class="button secondary" @click="confirmFormClose() && (dialog = '')">取消</button><button class="button primary" :disabled="form.id ? isPending(`update:message-components:${form.id}`) : isPending('create:message-components')" @click="submit">{{ (form.id ? isPending(`update:message-components:${form.id}`) : isPending('create:message-components')) ? '正在保存…' : '保存组件' }}</button></template>
     </AppModal>
   </main>
 </template>
@@ -312,10 +391,14 @@ const {dirty: formDirty, confirmClose: confirmFormClose} = useFormLeaveGuard(
 .collection-list { display: grid; gap: 7px; }
 .collection-row { display: flex; min-height: 44px; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid #e4e7ed; border-radius: 4px; background: #fff; }
 .collection-row:hover { border-color: #c6e2ff; }
+.collection-row.duplicate-route { border-color: #ff4d4f; background: #fff2f0; }
 .collection-row input { flex: 1; }
 .collection-row code { flex: 1; overflow: hidden; color: #303133; font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .row-index { display: grid; place-items: center; width: 28px; height: 28px; flex: 0 0 28px; border-radius: 4px; background: #e6f4ff; color: #1677ff; font-weight: 700; }
 .editor-error { display: inline-block; margin-top: 16px; }
+.route-rule { display: block; margin: -4px 0 10px; color: #667085; line-height: 1.5; }
+.field-error { margin: -3px 0 10px; color: #cf1322; font-size: 12px; }
+.locked-route { color: #8c8c8c; font-size: 12px; }
 .save-hint { margin-right: auto; color: #909399; font-size: 12px; }
 .instance-list-card { padding: 0; overflow: hidden; }
 .instance-list-card > .card-heading { margin: 0; padding: 18px 20px; border-bottom: 1px solid #ebeef5; }

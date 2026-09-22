@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import {applyFileRuleTemplate, matchingFileRuleTemplates, copyFileRuleTemplate} from '../src/file-rule-template.mjs'
+import {applyFileRuleTemplate, candidateFileRuleTemplates, matchingFileRuleTemplates, copyFileRuleTemplate} from '../src/file-rule-template.mjs'
 
 test('复制文件规则生成独立草稿并保留配置，不继承标识及版本', () => {
   const original = {id: 'old', version: 4, status: 'PUBLISHED', name: '预报', binding: {elementCodes: ['A']}, rule: {fileNameBindings: [{index: 0}]}}
@@ -21,6 +21,15 @@ test('文件规则模板按数据源、数据项和无序要素集合精确匹�
   const binding = {sourceCode:'S1', dataItemCode:'D1', elements:[{code:'A'}, {code:'B'}]}
   assert.equal(matchingFileRuleTemplates(templates, binding)[0].id, 't1')
   assert.equal(matchingFileRuleTemplates(templates, {...binding, elements:[{code:'A'}]}).length, 0)
+})
+
+test('要素未选完整时返回同一数据源和数据项下的候选模板', () => {
+  const templates = [
+    {id:'t1', status:'PUBLISHED', binding:{sourceCode:'S1', dataItemCode:'D1', elementCodes:['A', 'B']}},
+    {id:'t2', status:'PUBLISHED', binding:{sourceCode:'S1', dataItemCode:'D2', elementCodes:['C']}},
+    {id:'t3', status:'DRAFT', binding:{sourceCode:'S1', dataItemCode:'D1', elementCodes:['D']}}
+  ]
+  assert.deepEqual(candidateFileRuleTemplates(templates, {sourceCode:'S1', dataItemCode:'D1'}).map(item => item.id), ['t1'])
 })
 
 test('应用模板复制规则快照并保留报文自己的源地址和存储类型', () => {

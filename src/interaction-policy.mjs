@@ -16,7 +16,7 @@ export function executionModeError(canManage, request = {}) {
 
 export function taskFormError(form) {
   if (!form.name?.trim()) return '请输入任务名称'
-  if (!form.messageId) return '请选择报文模板'
+  if (!(Array.isArray(form.messageIds) ? form.messageIds : [form.messageId]).some(Boolean)) return '请至少选择一份报文模板'
   if (form.scheduleType === 'FIXED_RATE' && (!Number.isFinite(Number(form.schedule)) || Number(form.schedule) <= 0)) return '执行间隔必须大于 0 秒'
   const window = form.autoExecutionWindow || {type: 'UNBOUNDED'}
   if (form.scheduleType !== 'MANUAL' && window.type === 'DATE_RANGE') {

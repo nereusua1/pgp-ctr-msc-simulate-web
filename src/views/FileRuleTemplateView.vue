@@ -11,8 +11,8 @@ import ListPagination from '../components/ListPagination.vue'
 import SearchInput from '../components/SearchInput.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import {formatDateTime} from '../date-time.mjs'
-import {FILE_CONTENT_MODES, FILE_TIME_SOURCES, fileTimeSourceDescription} from '../file-rule-presets.mjs'
-import {analyzeFileRuleSample, readLocalFileSample} from '../file-rule-sample.mjs'
+import {FILE_CONTENT_MODES, FILE_TIME_SOURCES, fileTimeCategory, fileTimeOptions, fileTimeSourceDescription} from '../file-rule-presets.mjs'
+import {analyzeFileRuleSample, detectFileNameBindings, readLocalFileSample} from '../file-rule-sample.mjs'
 import {useListState} from '../list-state.mjs'
 import {setRoute} from '../page-route.mjs'
 import {copyFileRuleTemplate} from '../file-rule-template.mjs'
@@ -54,6 +54,22 @@ const pendingKey = computed(() => editorId.value && editorId.value !== 'new' ? `
 const isPending = computed(() => props.pendingActions.has(pendingKey.value))
 const parserModeLabel = value => parserModes.find(item => item[0] === value)?.[1] || value || '未配置'
 const contentModeLabel = value => FILE_CONTENT_MODES.find(item => item[0] === value)?.[1] || value || '未配置'
+const availableContentModes = computed(() => form.parserMode === 'POSITIONAL_TEXT'
+  ? FILE_CONTENT_MODES.filter(item => item[0] === 'SET')
+  : form.parserMode === 'FIXED_WIDTH' || form.parserMode === 'KEY_VALUE'
+    ? FILE_CONTENT_MODES.filter(item => item[0] === 'SHIFT')
+    : FILE_CONTENT_MODES)
+const fileNameCandidates = computed(() => {
+  const detected = detectFileNameBindings(form.sourceFileName).map(candidate => ({...candidate, displayText: candidate.sourceText}))
+  const configured = form.fileNameBindings.map(binding => ({...clone(binding), displayText: binding.sourceText || '历史样例不可用，请重新上传样例'}))
+  return [...new Map([...configured, ...detected].map(candidate => [Number(candidate.index), candidate])).values()]
+})
+const contentCandidates = computed(() => {
+  const detected = sampleResult.value?.contentCandidates || []
+  const configured = form.contentBindings || []
+  const candidates = [...detected, ...configured].map(candidate => clone(candidate))
+  return [...new Map(candidates.map(candidate => [contentCandidateId(candidate), candidate])).values()]
+})
 const referencesOf = template => template?.id
   ? props.messages.filter(message => message.fileGeneration?.ruleTemplateId === template.id)
   : []
@@ -115,13 +131,54 @@ function emptyForm() {
   }
 }
 function clone(value) { return JSON.parse(JSON.stringify(value)) }
+function editableTimeBinding(value) {
+  const binding = clone(value || {})
+  const source = binding.provider || binding.source
+  const category = fileTimeCategory(source)
+  binding.sourceCategory = category
+  binding.source = fileTimeOptions(category).some(item => item[0] === source) ? source : fileTimeOptions(category)[0][0]
+  delete binding.provider
+  if (['RELATIVE', 'DERIVED', 'SHIFT_BY_FILENAME_DELTA'].includes(binding.mode)) binding.mode = 'SET'
+  delete binding.relativeTo
+  delete binding.offsetMinutes
+  delete binding.referenceFileNameTimeIndex
+  return binding
+}
+function timeOptions(binding) { return fileTimeOptions(binding.sourceCategory) }
+function changeTimeCategory(binding) { binding.source = fileTimeOptions(binding.sourceCategory)[0][0] }
+function fileNameCandidateLabel(candidate) { return `第 ${candidate.index + 1} 个时间：${candidate.displayText || candidate.sourceText}` }
+function chooseFileNameCandidate(binding) {
+  const candidate = fileNameCandidates.value.find(item => item.index === Number(binding.index))
+  if (!candidate) return
+  const {displayText, ...persisted} = candidate
+  const selectedSource = binding.source || 'BUSINESS_BASE_TIME'
+  const selectedCategory = binding.sourceCategory || fileTimeCategory(selectedSource)
+  Object.assign(binding, persisted, {source: selectedSource, sourceCategory: selectedCategory})
+}
+function contentCandidateId(binding = {}) {
+  if (binding.locator) return `locator:${JSON.stringify(binding.locator)}`
+  return `fields:${(binding.fields || []).join('|')}`
+}
+function contentCandidateLabel(candidate) {
+  const position = candidate.locator
+    ? (candidate.locator.type === 'TOKEN_COLUMN' ? `第 ${Number(candidate.locator.columnIndex || 0) + 1} 列` : candidate.locator.prefix || candidate.locator.suffix || '文本时间')
+    : (candidate.fields || []).join(' + ')
+  return `${position}${candidate.sampleValue ? `：${candidate.sampleValue}` : ''}`
+}
+function chooseContentCandidate(binding, candidateId) {
+  const candidate = contentCandidates.value.find(item => contentCandidateId(item) === candidateId)
+  if (!candidate) return
+  const replacement = editableTimeBinding(candidate)
+  Object.keys(binding).forEach(key => delete binding[key])
+  Object.assign(binding, replacement)
+}
 function templateForm(template) {
   const binding = template.binding || {}
   const parserMode = template.rule?.parserMode || 'DELIMITED'
   const elements = Array.isArray(binding.elements) && binding.elements.length
     ? clone(binding.elements)
     : (binding.elementCodes || []).map(code => ({id: code, code, name: ''}))
-  const contentBindings = clone(template.rule?.contentBindings || []).map(item => parserMode === 'POSITIONAL_TEXT' && !item.locator
+  const contentBindings = clone(template.rule?.contentBindings || []).map(editableTimeBinding).map(item => parserMode === 'POSITIONAL_TEXT' && !item.locator
     ? {...item, locator: {type: 'TOKEN_COLUMN', columnIndex: 0, separator: 'WHITESPACE', header: false}}
     : item)
   return {
@@ -129,7 +186,7 @@ function templateForm(template) {
     sourceCode: binding.sourceCode || '', sourceName: binding.sourceName || '', dataItemCode: binding.dataItemCode || '', dataItemName: binding.dataItemName || '', elements,
     fileNamePattern: template.match?.fileNamePattern || '', firstLineContains: template.match?.firstLineContains || '',
     sourceFileName: template.rule?.sourceFileName || '', parserMode, encoding: template.rule?.encoding || 'AUTO', delimiter: template.rule?.delimiter || 'AUTO',
-    fileNameBindings: clone(template.rule?.fileNameBindings || []), contentBindings, version: Number(template.version || 1)
+    fileNameBindings: clone(template.rule?.fileNameBindings || []).map(editableTimeBinding), contentBindings, version: Number(template.version || 1)
   }
 }
 function resetCatalog() {
@@ -248,7 +305,7 @@ async function uploadSample(event) {
     const result = analyzeFileRuleSample(sample)
     Object.assign(form, {
       sourceFileName: sample.fileName, parserMode: result.parserMode, encoding: result.encoding, delimiter: result.delimiter,
-      fileNameBindings: clone(result.fileNameBindings), contentBindings: clone(result.contentBindings)
+      fileNameBindings: clone(result.fileNameBindings).map(editableTimeBinding), contentBindings: clone(result.contentBindings).map(editableTimeBinding)
     })
     sampleResult.value = {...result, fileName: sample.fileName, size: sample.size}
   } catch (exception) { error.value = `样例文件识别失败：${exception.message}` }
@@ -262,24 +319,17 @@ function changeParserMode() {
   }
 }
 function addFileNameBinding() {
-  form.fileNameBindings.push({index: form.fileNameBindings.length, format: 'yyyyMMddHH', source: 'BUSINESS_BASE_TIME', relativeTo: null})
+  const used = new Set(form.fileNameBindings.map(binding => Number(binding.index)))
+  const candidate = fileNameCandidates.value.find(item => !used.has(item.index))
+  if (!candidate) { error.value = '原始文件名中没有可添加的时间片段，请先在样例步骤上传或填写可识别的文件名'; return }
+  form.fileNameBindings.push(editableTimeBinding(candidate))
 }
 function addContentBinding() {
-  if (form.parserMode === 'POSITIONAL_TEXT') {
-    form.contentBindings.push({mode: 'SET', locator: {type: 'TOKEN_COLUMN', columnIndex: 0, separator: 'WHITESPACE', header: false}, format: 'yyyyMMddHHmm', source: 'BUSINESS_BASE_TIME', expectedMatches: 'ALL_ROWS', referenceFileNameTimeIndex: 0})
-    return
-  }
-  const mode = form.parserMode === 'FIXED_WIDTH' ? 'SHIFT' : form.parserMode === 'KEY_VALUE' ? 'KEY_VALUE' : 'SHIFT'
-  form.contentBindings.push({mode, fields: form.parserMode === 'FIXED_WIDTH' ? ['Year', 'Month', 'Day', 'Hour'] : [], format: 'yyyy-MM-dd HH:mm:ss', source: 'BUSINESS_BASE_TIME'})
+  const used = new Set(form.contentBindings.map(contentCandidateId))
+  const candidate = contentCandidates.value.find(item => !used.has(contentCandidateId(item)))
+  if (!candidate) { error.value = '样例中没有可添加的时间字段，请返回样例步骤重新上传并识别'; return }
+  form.contentBindings.push(editableTimeBinding(candidate))
 }
-function changeLocator(binding) {
-  const type = binding.locator.type
-  binding.locator = type === 'LINE_PREFIX' ? {type, prefix: '', tokenIndex: 0}
-    : type === 'LINE_SUFFIX' ? {type, suffix: '', tokenIndex: 0}
-      : {type, columnIndex: 0, separator: 'WHITESPACE', header: false}
-}
-function fieldsText(binding) { return (binding.fields || []).join(', ') }
-function setFields(binding, value) { binding.fields = value.split(',').map(item => item.trim()).filter(Boolean) }
 function hasExecutableRule() {
   if (form.parserMode === 'PASSTHROUGH') return form.fileNameBindings.length > 0 && form.contentBindings.length === 0
   if (form.parserMode === 'FIXED_WIDTH') return form.contentBindings.length === 1
@@ -317,7 +367,8 @@ function payload(status) {
     match: {fileNamePattern: form.fileNamePattern.trim(), firstLineContains: form.firstLineContains.trim()},
     rule: {
       schemaVersion: 2, sourceFileName: form.sourceFileName.trim(), sourceFilePath: '', storageType: 'OSS', parserMode: form.parserMode,
-      encoding: form.encoding, delimiter: form.delimiter, fileNameBindings: clone(form.fileNameBindings), contentBindings: clone(form.contentBindings)
+      encoding: form.encoding, delimiter: form.delimiter,
+      fileNameBindings: clone(form.fileNameBindings), contentBindings: clone(form.contentBindings)
     }
   }
 }
@@ -416,10 +467,10 @@ function confirmDelete() {
           <div class="form-grid parsing-grid"><label>样例文件名<input v-model="form.sourceFileName" placeholder="上传样例后自动带出"></label><label>处理方式<select v-model="form.parserMode" @change="changeParserMode"><option v-for="item in parserModes" :key="item[0]" :value="item[0]">{{ item[1] }}</option></select></label><label>字符编码<select v-model="form.encoding" :disabled="form.parserMode === 'PASSTHROUGH'"><option>AUTO</option><option>UTF-8</option><option>GB18030</option></select></label><label>分隔符<select v-model="form.delimiter" :disabled="form.parserMode !== 'DELIMITED'"><option>AUTO</option><option value=",">逗号</option><option value="TAB">制表符</option><option value="|">竖线</option><option value=";">分号</option></select></label><label>文件名正则<input v-model="form.fileNamePattern" placeholder="可选，用于限制匹配文件名"></label><label>首行包含<input v-model="form.firstLineContains" placeholder="可选，用于补充文件识别条件"></label></div>
         </section>
 
-        <section v-else id="file-rule-step-rules" class="config-panel"><div class="card-heading"><div><h2>时间替换规则</h2><p>分别配置文件名与内容中的时间来源，保存的数据结构与报文模板一致。</p></div></div>
-          <section class="rule-section"><div class="rule-heading"><div><h3>文件名时间</h3><p>按文件名中的时间片段顺序定位，前缀变化不会影响替换。</p></div><button class="button secondary small" type="button" @click="addFileNameBinding">添加文件名规则</button></div><div v-if="form.fileNameBindings.length" class="rule-list"><article v-for="(binding, index) in form.fileNameBindings" :key="index"><strong>第 {{ index + 1 }} 条</strong><label>片段序号<input v-model.number="binding.index" type="number" min="0"></label><label>时间格式<input v-model.trim="binding.format" placeholder="yyyyMMddHH"></label><label>时间来源<select v-model="binding.source"><option v-for="source in FILE_TIME_SOURCES" :key="source[0]" :value="source[0]">{{ source[1] }}</option></select></label><label v-if="binding.source === 'PRESERVE_OFFSET'">参考片段<input v-model.number="binding.relativeTo" type="number" min="0"></label><button class="link-button danger-text" type="button" @click="form.fileNameBindings.splice(index, 1)">删除</button></article></div><div v-else class="rule-empty">尚未配置文件名时间规则。</div></section>
-          <section class="rule-section"><div class="rule-heading"><div><h3>文件内容时间</h3><p>{{ form.parserMode === 'PASSTHROUGH' ? '当前为内容原样复制，不允许配置内容时间规则。' : `按${parserModeLabel(form.parserMode)}的字段结构定位和替换。` }}</p></div><button v-if="form.parserMode !== 'PASSTHROUGH'" class="button secondary small" type="button" :disabled="form.parserMode === 'FIXED_WIDTH' && form.contentBindings.length > 0" @click="addContentBinding">添加内容规则</button></div><div v-if="form.contentBindings.length" class="rule-list content-rule-list"><article v-for="(binding, index) in form.contentBindings" :key="index"><strong>{{ contentModeLabel(binding.mode) }}</strong><template v-if="form.parserMode === 'POSITIONAL_TEXT'"><label>定位方式<select v-model="binding.locator.type" @change="changeLocator(binding)"><option value="TOKEN_COLUMN">无表头列</option><option value="LINE_PREFIX">行前缀</option><option value="LINE_SUFFIX">行后缀</option></select></label><label v-if="binding.locator.type === 'TOKEN_COLUMN'">列序号<input v-model.number="binding.locator.columnIndex" type="number" min="0"></label><label v-else>字段序号<input v-model.number="binding.locator.tokenIndex" type="number" min="0"></label><label v-if="binding.locator.type === 'LINE_PREFIX'">行前缀<input v-model.trim="binding.locator.prefix"></label><label v-if="binding.locator.type === 'LINE_SUFFIX'">行后缀<input v-model.trim="binding.locator.suffix"></label><label>替换方式<select v-model="binding.mode"><option value="SET">设置为指定时间</option><option value="SHIFT_BY_FILENAME_DELTA">按文件名时间差平移</option></select></label><label>时间格式<input v-model.trim="binding.format"></label><label v-if="binding.mode === 'SET'">时间来源<select v-model="binding.source"><option v-for="source in FILE_TIME_SOURCES.filter(item => item[0] !== 'PRESERVE_OFFSET')" :key="source[0]" :value="source[0]">{{ source[1] }}</option></select></label><label v-else>参考文件名规则<select v-model.number="binding.referenceFileNameTimeIndex"><option v-for="item in form.fileNameBindings" :key="item.index" :value="item.index">片段 {{ Number(item.index) + 1 }} · {{ item.format }}</option></select></label></template><template v-else><label>字段<input :value="fieldsText(binding)" placeholder="多个字段用逗号分隔" @input="setFields(binding, $event.target.value)"></label><label>替换方式<select v-model="binding.mode"><option v-for="mode in FILE_CONTENT_MODES.filter(item => item[0] !== 'SHIFT_BY_FILENAME_DELTA')" :key="mode[0]" :value="mode[0]">{{ mode[1] }}</option></select></label><label v-if="binding.mode !== 'COMPOSITE'">时间格式<input v-model.trim="binding.format" placeholder="yyyy-MM-dd HH:mm:ss"></label><label v-if="binding.mode !== 'COMPOSITE'">时间来源<select v-model="binding.source"><option v-for="source in FILE_TIME_SOURCES.filter(item => item[0] !== 'PRESERVE_OFFSET')" :key="source[0]" :value="source[0]">{{ source[1] }}</option></select></label><label v-if="binding.mode === 'DERIVED'">偏移分钟<input v-model.number="binding.offsetMinutes" type="number"></label></template><button class="link-button danger-text" type="button" @click="form.contentBindings.splice(index, 1)">删除</button></article></div><div v-else class="rule-empty">{{ form.parserMode === 'PASSTHROUGH' ? '文件内容将按字节原样复制。' : '尚未配置内容时间规则。' }}</div></section>
-          <div class="rule-source-guide"><b>时间来源说明</b><div><p v-for="source in FILE_TIME_SOURCES" :key="source[0]"><strong>{{ source[1] }}：</strong>{{ fileTimeSourceDescription(source[0]) }}</p></div><small>只校验当前已配置规则实际依赖的时间参数；数据间隔读取 <code>period_interval</code>，预报结束时间读取 <code>period</code>。</small></div>
+        <section v-else id="file-rule-step-rules" class="config-panel"><div class="card-heading"><div><h2>时间替换规则</h2><p>从样例识别结果中选择文件名片段和内容字段，并为每条规则选择时间来源。</p></div></div>
+          <section class="rule-section"><div class="rule-heading"><div><h3>文件名时间</h3><p>选择样例文件名中识别出的时间片段，不需要填写内部位置序号。</p></div><button class="button secondary small" type="button" :disabled="!fileNameCandidates.length" @click="addFileNameBinding">添加文件名规则</button></div><div v-if="form.fileNameBindings.length" class="rule-list"><article v-for="(binding, index) in form.fileNameBindings" :key="index"><strong>第 {{ index + 1 }} 条</strong><label>文件名时间片段<select v-model.number="binding.index" @change="chooseFileNameCandidate(binding)"><option v-for="candidate in fileNameCandidates" :key="candidate.index" :value="candidate.index">{{ fileNameCandidateLabel(candidate) }}</option></select></label><label>时间格式<input v-model.trim="binding.format" placeholder="yyyyMMddHH"></label><fieldset class="time-source-field"><legend>时间来源</legend><div class="time-source-control"><select v-model="binding.sourceCategory" aria-label="一级时间来源" @change="changeTimeCategory(binding)"><option v-for="source in FILE_TIME_SOURCES" :key="source[0]" :value="source[0]">{{ source[1] }}</option></select><span aria-hidden="true">对应</span><select v-model="binding.source" aria-label="时间来源具体方式"><option v-for="option in timeOptions(binding)" :key="option[0]" :value="option[0]">{{ option[1] }}</option></select></div></fieldset><button class="link-button danger-text" type="button" @click="form.fileNameBindings.splice(index, 1)">删除</button></article></div><div v-else class="rule-empty">{{ fileNameCandidates.length ? '尚未选择文件名时间片段。' : '样例文件名中未识别出时间，请返回样例步骤上传或填写文件名。' }}</div></section>
+          <section class="rule-section"><div class="rule-heading"><div><h3>文件内容时间</h3><p>{{ form.parserMode === 'PASSTHROUGH' ? '当前为内容原样复制，不允许配置内容时间规则。' : `从${parserModeLabel(form.parserMode)}样例中选择已识别的时间字段。` }}</p></div><button v-if="form.parserMode !== 'PASSTHROUGH'" class="button secondary small" type="button" :disabled="!contentCandidates.length || (form.parserMode === 'FIXED_WIDTH' && form.contentBindings.length > 0)" @click="addContentBinding">添加内容规则</button></div><div v-if="form.contentBindings.length" class="rule-list content-rule-list"><article v-for="(binding, index) in form.contentBindings" :key="index"><strong>{{ contentModeLabel(binding.mode) }}</strong><label>时间字段<select :value="contentCandidateId(binding)" @change="chooseContentCandidate(binding, $event.target.value)"><option v-for="candidate in contentCandidates" :key="contentCandidateId(candidate)" :value="contentCandidateId(candidate)">{{ contentCandidateLabel(candidate) }}</option></select></label><label>替换方式<select v-model="binding.mode"><option v-for="mode in availableContentModes" :key="mode[0]" :value="mode[0]">{{ mode[1] }}</option></select></label><label v-if="binding.mode !== 'COMPOSITE'">时间格式<input v-model.trim="binding.format" placeholder="yyyy-MM-dd HH:mm:ss"></label><fieldset class="time-source-field"><legend>时间来源</legend><div class="time-source-control"><select v-model="binding.sourceCategory" aria-label="一级时间来源" @change="changeTimeCategory(binding)"><option v-for="source in FILE_TIME_SOURCES" :key="source[0]" :value="source[0]">{{ source[1] }}</option></select><span aria-hidden="true">对应</span><select v-model="binding.source" aria-label="时间来源具体方式"><option v-for="option in timeOptions(binding)" :key="option[0]" :value="option[0]">{{ option[1] }}</option></select></div></fieldset><button class="link-button danger-text" type="button" @click="form.contentBindings.splice(index, 1)">删除</button></article></div><div v-else class="rule-empty">{{ form.parserMode === 'PASSTHROUGH' ? '文件内容将按字节原样复制。' : '尚未识别到可选择的内容时间字段，请返回样例步骤上传文件。' }}</div></section>
+          <div class="rule-trigger-guide"><b>时间来源说明</b><div><p v-for="source in FILE_TIME_SOURCES" :key="source[0]"><strong>{{ source[1] }}：</strong>{{ fileTimeSourceDescription(source[0]) }}</p></div><small>预报时间只适用于预报业务；实况不读取或强制校验 <code>period</code>、<code>period_interval</code>、<code>pre_time_point</code>。</small></div>
           <div class="notice subtle"><b>当前规则：</b>{{ form.fileNameBindings.length }} 条文件名时间规则，{{ form.contentBindings.length }} 条内容时间规则。</div>
         </section>
       </div>
@@ -435,5 +486,6 @@ function confirmDelete() {
 <style scoped>
 .config-panel label small{display:block;color:#748398;font-size:11px;font-weight:400;line-height:1.45}
 .file-rule-list-card{padding:0;overflow:hidden}.file-rule-table td{vertical-align:middle}.file-rule-table td:first-child,.file-rule-table th:first-child{padding-left:20px}.file-rule-table td:last-child,.file-rule-table th:last-child{padding-right:20px}.version-label{display:inline-block;margin-right:8px;color:#51647d;font-variant-numeric:tabular-nums}.count-value{color:#253a53;font-size:17px;font-weight:700}.reference-count{display:block;max-width:210px;margin:5px auto 0!important;overflow:hidden;color:#758399;text-align:center;text-overflow:ellipsis;white-space:nowrap}.editor-status-strip{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px;padding:11px 14px;border:1px solid #e6ebf2;border-radius:8px;background:#fafbfd}.editor-status-strip>div{display:flex;align-items:center;gap:10px;color:#6d7c90;font-size:13px}.unsaved-indicator{padding:3px 7px;border-radius:4px;background:#fff7e6;color:#ad6800;font-weight:650}.issue-summary{padding:4px 8px;border:0;background:transparent;color:#cf1322;font-weight:650}.issue-summary.ready{color:#389e0d}.editor-workbench{overflow:hidden;border:1px solid #e8edf3;border-radius:8px;background:#fff}.editor-step-header{padding:16px 18px 0;border-bottom:1px solid #edf0f5;background:#fafbfd}.editor-step-header>div{display:flex;align-items:center;justify-content:space-between;gap:12px}.editor-step-header b{color:#263a54}.editor-step-header small{color:#7b899c}.step-tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin-top:14px}.step-tabs button{display:flex;min-width:0;align-items:center;gap:8px;padding:12px 14px;border:0;border-bottom:2px solid transparent;background:transparent;color:#6a788d;text-align:left}.step-tabs button.active{border-bottom-color:#1677ff;color:#1677ff}.step-tabs button.complete i{background:#e6f4ff;color:#1677ff}.step-tabs i{display:grid;width:24px;height:24px;flex:0 0 24px;place-items:center;border-radius:50%;background:#eef1f5;color:#6f7d90;font-style:normal;font-size:12px;font-weight:700}.step-tabs span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.step-tabs small{display:grid;min-width:20px;height:20px;place-items:center;border-radius:10px;background:#fff1f0;color:#cf1322}.config-panel{padding:22px}.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.wide-field{grid-column:1/-1}.config-panel label{display:grid;gap:6px;color:#52647c;font-size:13px;font-weight:650}.config-panel input,.config-panel select,.config-panel textarea{width:100%;box-sizing:border-box;border:1px solid #d9dfe8;border-radius:6px;background:#fff;color:#263b53;font:inherit;outline:0}.config-panel input,.config-panel select{height:38px;padding:0 10px}.config-panel textarea{padding:10px;resize:vertical}.config-panel input:focus,.config-panel select:focus,.config-panel textarea:focus,.sample-upload:focus-visible{border-color:#1677ff;box-shadow:0 0 0 3px rgb(22 119 255 / 10%)}.config-panel input:disabled,.config-panel select:disabled{background:#f5f6f8;color:#8c98a8}.data-linkage-grid{display:grid;grid-template-columns:1.05fr 1fr 1.2fr;gap:12px}.linkage-step{min-width:0;padding:15px;border:1px solid #e4e9f0;border-radius:8px;background:#fafafa}.linkage-step.disabled{opacity:.62}.linkage-step h3{display:flex;align-items:center;gap:8px;margin:0 0 14px;color:#253b55;font-size:15px}.linkage-step h3 i{display:grid;width:24px;height:24px;place-items:center;border-radius:50%;background:#1677ff;color:#fff;font-style:normal;font-size:12px}.catalog-options,.element-options{max-height:250px;margin-top:8px;overflow:auto}.catalog-options>button{display:grid;width:100%;gap:3px;padding:10px 11px;border:1px solid transparent;border-radius:6px;background:transparent;text-align:left}.catalog-options>button:hover,.catalog-options>button.selected,.element-options>label:hover,.element-options>label.selected{border-color:#91caff;background:#eaf4ff}.catalog-options code{overflow:hidden;color:#1677ff;text-overflow:ellipsis}.catalog-options b,.element-options b{overflow:hidden;color:#253b55;text-overflow:ellipsis;white-space:nowrap}.catalog-options small,.element-options small{color:#7d8b9e;font-weight:400}.catalog-empty{padding:22px 8px;color:#8492a6;text-align:center;font-size:13px}.select-all{width:100%;margin-top:8px;padding:9px 10px;border:1px solid #91caff;border-radius:6px;background:#eaf4ff;color:#096dd9;text-align:left}.element-options>label{display:flex;align-items:flex-start;gap:8px;padding:10px;border:1px solid transparent;border-radius:6px}.element-options input{width:16px;height:16px;margin:2px 0 0;accent-color:#1677ff}.element-options span{min-width:0}.element-options b,.element-options small{display:block}.binding-summary{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-top:14px;padding:14px 16px;border:1px solid #bae0ff;border-radius:8px;background:#f6fbff}.binding-summary b,.binding-summary small{display:block}.binding-summary strong{flex:none;color:#096dd9;font-size:13px}.selected-element-chips,.detected-fields,.detail-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}.selected-element-chips span,.detected-fields span,.detail-chips span{padding:4px 8px;border:1px solid #c6ddff;border-radius:4px;background:#fff;color:#2859cf;font-size:12px}.sample-upload{display:flex;width:100%;align-items:center;gap:12px;padding:20px;border:1px dashed #91caff;border-radius:8px;background:#f7fbff;color:#1677ff;text-align:left}.sample-upload span,.sample-upload b,.sample-upload small{display:block}.sample-upload small{margin-top:4px;color:#6f8096;font-weight:400}.sample-result{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-top:12px;padding:14px;border:1px solid #b7eb8f;border-radius:8px;background:#f6ffed}.sample-result b,.sample-result span,.sample-result small{display:block}.sample-result span{margin-top:4px;color:#365314}.sample-result small{margin-top:3px;color:#52734b}.parsing-grid{margin-top:20px}.rule-section+.rule-section{margin-top:24px;padding-top:22px;border-top:1px solid #edf0f5}.rule-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.rule-heading h3{margin:0;color:#263a54;font-size:16px}.rule-heading p{margin:5px 0 0;color:#748398;font-size:13px}.rule-list{display:grid;gap:8px;margin-top:12px}.rule-list article{display:grid;grid-template-columns:90px repeat(4,minmax(130px,1fr)) auto;align-items:end;gap:10px;padding:12px;border:1px solid #e6eaf0;border-radius:6px;background:#fafbfd}.rule-list article>strong{align-self:center;color:#1677ff;font-size:12px}.content-rule-list article{grid-template-columns:120px repeat(5,minmax(130px,1fr)) auto}.rule-empty{margin-top:12px;padding:18px;border:1px dashed #d9dfe8;border-radius:6px;background:#fafafa;color:#7b899c;text-align:center;font-size:13px}.save-hint{margin-right:auto;color:#7d8b9e;font-size:13px}.unified-detail{display:grid;gap:16px}.detail-chips{margin-top:14px}.visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}@media(max-width:1180px){.data-linkage-grid{grid-template-columns:1fr}.rule-list article,.content-rule-list article{grid-template-columns:repeat(2,minmax(0,1fr))}.rule-list article>strong,.rule-list article>.link-button{justify-self:start}}@media(max-width:760px){.editor-status-strip,.editor-step-header>div,.binding-summary,.sample-result,.rule-heading{align-items:flex-start;flex-direction:column}.step-tabs{grid-template-columns:repeat(2,minmax(0,1fr))}.form-grid,.rule-list article,.content-rule-list article{grid-template-columns:1fr}.wide-field{grid-column:auto}.config-panel{padding:15px}.editor-status-strip>div{align-items:flex-start;flex-wrap:wrap}}
-.rule-source-guide{margin-top:16px;padding:13px 15px;border:1px solid #dfe5ee;border-radius:6px;background:#fafbfd;color:#526078;font-size:12px;line-height:1.6}.rule-source-guide>b{display:block;margin-bottom:5px;color:#263a54}.rule-source-guide>div{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:3px 18px}.rule-source-guide p{margin:0}.rule-source-guide strong{color:#334a64}.rule-source-guide small{display:block;margin-top:6px;color:#748398}.rule-source-guide code{color:#1677ff}@media(max-width:760px){.rule-source-guide>div{grid-template-columns:1fr}}
-</style>
+.rule-trigger-guide{margin-top:16px;padding:13px 15px;border:1px solid #dfe5ee;border-radius:6px;background:#fafbfd;color:#526078;font-size:12px;line-height:1.6}.rule-trigger-guide>b{display:block;margin-bottom:5px;color:#263a54}.rule-trigger-guide>div{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:3px 18px}.rule-trigger-guide p{margin:0}.rule-trigger-guide strong{color:#334a64}.rule-trigger-guide small{display:block;margin-top:6px;color:#748398}.rule-trigger-guide code{color:#1677ff}@media(max-width:760px){.rule-trigger-guide>div{grid-template-columns:1fr}}
+    .time-source-field{grid-column:span 2;min-width:0;margin:0;padding:0;border:0}.time-source-field legend{margin-bottom:6px;padding:0;color:#53657b;font-size:13px;font-weight:600}.time-source-control{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1.2fr);align-items:center;gap:8px}.time-source-control span{color:#8a98aa;font-size:12px}.time-source-control select{min-width:0;width:100%}@media(max-width:760px){.time-source-field{grid-column:auto}.time-source-control{grid-template-columns:1fr}.time-source-control span{display:none}}
+    </style>

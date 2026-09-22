@@ -16,11 +16,13 @@ const keyword = ref('')
 const remoteExecutions = ref([])
 const activeIndex = ref(0)
 const inputRef = ref(null)
+const triggerRef = ref(null)
 const shortcutLabel = /Mac|iPhone|iPad/.test(window.navigator?.platform || '') ? '⌘ K' : 'Ctrl K'
 const recent = ref(safeStoredItems(window.localStorage, RECENT_KEY))
 const favorites = ref(safeStoredItems(window.localStorage, FAVORITE_KEY, 20))
 let searchTimer
 let requestSequence = 0
+let returnFocusElement = null
 
 const allItems = computed(() => buildGlobalSearchItems({...props, executions: remoteExecutions.value}))
 const searchResults = computed(() => filterGlobalSearchItems(allItems.value, keyword.value))
@@ -37,13 +39,19 @@ const groups = computed(() => {
 const flatResults = computed(() => groups.value.flatMap(group => group.items))
 
 function openPanel() {
+  returnFocusElement = document.activeElement instanceof HTMLElement ? document.activeElement : triggerRef.value
   open.value = true
   keyword.value = ''
   remoteExecutions.value = []
   activeIndex.value = 0
   nextTick(() => inputRef.value?.focus())
 }
-function closePanel() { open.value = false }
+function closePanel() {
+  open.value = false
+  const focusTarget = returnFocusElement?.isConnected ? returnFocusElement : triggerRef.value
+  returnFocusElement = null
+  nextTick(() => focusTarget?.focus())
+}
 function onGlobalKeydown(event) {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
     event.preventDefault()
@@ -92,17 +100,17 @@ function indexOf(item) { return flatResults.value.findIndex(row => row.key === i
 </script>
 
 <template>
-  <button class="global-search-trigger" type="button" aria-label="打开全局搜索" @click="openPanel">
+  <button ref="triggerRef" class="global-search-trigger" type="button" aria-label="打开全局搜索" @click="openPanel">
     <AppIcon name="search" :size="16"/><span>搜索任务、报文、执行记录…</span><kbd>{{ shortcutLabel }}</kbd>
   </button>
   <teleport to="body">
     <div v-if="open" class="command-backdrop" @mousedown.self="closePanel">
       <section class="command-panel" role="dialog" aria-modal="true" aria-label="全局搜索">
-        <div class="command-input-wrap"><AppIcon name="search" :size="20"/><input ref="inputRef" v-model="keyword" role="combobox" aria-label="全局搜索" aria-controls="global-search-results" :aria-expanded="open" placeholder="搜索名称、编号、Topic、Group 或异常摘要" autocomplete="off" @keydown="handleListKeydown"><kbd>ESC</kbd></div>
+        <div class="command-input-wrap"><AppIcon name="search" :size="20"/><input ref="inputRef" v-model="keyword" role="combobox" aria-label="全局搜索" aria-autocomplete="list" aria-controls="global-search-results" :aria-activedescendant="flatResults.length ? `global-search-option-${activeIndex}` : undefined" :aria-expanded="open" placeholder="搜索名称、编号、Topic、Group 或异常摘要" autocomplete="off" @keydown="handleListKeydown"><kbd>ESC</kbd></div>
         <div id="global-search-results" class="command-results" role="listbox">
           <template v-for="group in groups" :key="group.label">
             <div class="command-group-label">{{ group.label }}<span>{{ group.items.length }}</span></div>
-            <div v-for="item in group.items" :key="item.key" class="command-result" :class="{active: indexOf(item) === activeIndex}" role="option" :aria-selected="indexOf(item) === activeIndex" :data-global-result="indexOf(item)" @mouseenter="activeIndex = indexOf(item)" @click="choose(item)">
+            <div v-for="item in group.items" :id="`global-search-option-${indexOf(item)}`" :key="item.key" class="command-result" :class="{active: indexOf(item) === activeIndex}" role="option" :aria-selected="indexOf(item) === activeIndex" :data-global-result="indexOf(item)" @mouseenter="activeIndex = indexOf(item)" @click="choose(item)">
               <span class="command-type-mark" :data-kind="item.kind"><AppIcon :name="item.icon" :size="17"/></span>
               <span class="command-result-main"><span><b>{{ item.title }}</b><em>{{ item.type }}</em></span><small><code v-if="item.code">{{ item.code }}</code><span v-if="item.detail">{{ item.detail }}</span></small></span>
               <span v-if="item.status" class="status-badge" :class="statusMeta(item.status)[1]">{{ statusMeta(item.status)[0] }}</span>

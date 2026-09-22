@@ -1,14 +1,7 @@
 <script setup>
-import {computed, nextTick, onMounted, onBeforeUnmount, reactive, ref, watch} from 'vue'
+import {computed, defineAsyncComponent, nextTick, onMounted, onBeforeUnmount, reactive, ref, watch} from 'vue'
 import {latestRequest, executionModeError} from './interaction-policy.mjs'
 import {parseRoute, setRoute} from './page-route.mjs'
-import OverviewView from './views/OverviewView.vue'
-import TaskManagementView from './views/TaskManagementView.vue'
-import MessageManagementView from './views/MessageManagementView.vue'
-import FileRuleTemplateView from './views/FileRuleTemplateView.vue'
-import DataItemManagementView from './views/DataItemManagementView.vue'
-import MessageComponentManagementView from './views/MessageComponentManagementView.vue'
-import ExecutionLogView from './views/ExecutionLogView.vue'
 import LoginView from './views/LoginView.vue'
 import AppIcon from './components/AppIcon.vue'
 import GlobalSearch from './components/GlobalSearch.vue'
@@ -16,6 +9,7 @@ import PageSkeleton from './components/PageSkeleton.vue'
 import * as api from './api'
 import {runExclusive} from './action-guard.mjs'
 import {createRequestId} from './request-id.mjs'
+import {normalizeTaskForSave, normalizeTaskForView} from './task-contract.mjs'
 import {canManageConfiguration, getAuthenticatedRole, getAuthenticatedUsername, hasPermission, isAuthenticatedUser} from './authentication.mjs'
 import {
   flattenResource,
@@ -24,6 +18,14 @@ import {
   normalizeTemplate,
   serializeResource
 } from './resource-adapter.mjs'
+
+const OverviewView = defineAsyncComponent(() => import('./views/OverviewView.vue'))
+const TaskManagementView = defineAsyncComponent(() => import('./views/TaskManagementView.vue'))
+const MessageManagementView = defineAsyncComponent(() => import('./views/MessageManagementView.vue'))
+const FileRuleTemplateView = defineAsyncComponent(() => import('./views/FileRuleTemplateView.vue'))
+const DataItemManagementView = defineAsyncComponent(() => import('./views/DataItemManagementView.vue'))
+const MessageComponentManagementView = defineAsyncComponent(() => import('./views/MessageComponentManagementView.vue'))
+const ExecutionLogView = defineAsyncComponent(() => import('./views/ExecutionLogView.vue'))
 
 const navigation = [
   {key: 'overview', label: '运行总览', icon: 'overview'},
@@ -52,17 +54,19 @@ const executions = ref([])
 const executionAnalytics = ref({trend: [], failureStages: [], mqDistribution: [], taskTrends: [], recentFailures: []})
 const analyticsRange = ref('24h')
 const initialQuery = new URLSearchParams(window.location.search)
-const executionPage = reactive({page: Number(initialQuery.get('logs.page')) || 1, size: Number(initialQuery.get('logs.size')) || 10, total: 0, totalPages: 1, keyword: initialRoute.page === 'logs' && initialRoute.id ? initialRoute.id : initialQuery.get('logs.q') || '', status: initialQuery.get('logs.status') || 'ALL'})
+const executionPage = reactive({page: Number(initialQuery.get('logs.page')) || 1, size: Number(initialQuery.get('logs.size')) || 10, total: 0, totalPages: 1, keyword: initialRoute.page === 'logs' && initialRoute.id ? initialRoute.id : initialQuery.get('logs.q') || '', status: initialQuery.get('logs.status') || 'ALL', messageType: initialQuery.get('logs.messageType') || 'ALL', dataItemCode: initialQuery.get('logs.dataItemCode') || '', failureStage: initialQuery.get('logs.failureStage') || '', startTime: initialQuery.get('logs.startTime') || '', endTime: initialQuery.get('logs.endTime') || ''})
 const executionMessages = ref([])
 const selectedTaskId = ref(initialRoute.page === 'tasks' ? initialRoute.id : '')
 const selectedExecutionId = ref(initialRoute.page === 'logs' ? initialRoute.id : '')
 const routeId = ref(initialRoute.id)
+const routeEdit = ref(initialRoute.edit)
 const loading = ref(true)
 const loadError = ref('')
 const resourceErrors = reactive({})
 const connectionChecks = reactive({})
 const updatedAt = ref('')
 const toast = ref(null)
+const sessionExpiring = ref(false)
 const currentUser = ref(null)
 const checkingAuthentication = ref(true)
 const loginLoading = ref(false)
@@ -70,6 +74,16 @@ const loginError = ref('')
 const hasUnsavedMessageChanges = ref(false)
 const pendingActions = reactive(new Set())
 let toastTimer
+let sessionWarningTimer
+
+function scheduleSessionWarning(response) {
+  if (!currentUser.value && !isAuthenticatedUser(response)) return
+  const timeoutSeconds = Number(response?.sessionTimeoutSeconds || currentUser.value?.sessionTimeoutSeconds || 7200)
+  clearTimeout(sessionWarningTimer)
+  sessionExpiring.value = false
+  if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) return
+  sessionWarningTimer = setTimeout(() => { sessionExpiring.value = true }, Math.max(0, timeoutSeconds - 300) * 1000)
+}
 
 const pageTitle = computed(() => navigation.find(item => item.key === activePage.value)?.label || '运行总览')
 const serviceState = computed(() => Object.values(resourceErrors).some(Boolean)
@@ -133,6 +147,7 @@ const pageProps = computed(() => {
     pendingActions,
     canManage: canManage.value,
     routeId: routeId.value,
+    routeEdit: routeEdit.value,
     components: components.value
   }
   if (activePage.value === 'messages') return {
@@ -202,29 +217,31 @@ function navigate(page, filter) {
     }
   }
   activePage.value = page
+  routeEdit.value = false
   setRoute(page)
   window.scrollTo({top: 0, behavior: 'smooth'})
 }
 
 function syncRoute() {
   const route = parseRoute(window.location.pathname)
-  if (hasUnsavedMessageChanges.value && (route.page !== activePage.value || route.id !== routeId.value) &&
+  if (hasUnsavedMessageChanges.value && (route.page !== activePage.value || route.id !== routeId.value || route.edit !== routeEdit.value) &&
       !window.confirm('当前修改尚未保存，是否离开？')) {
-    setRoute(activePage.value, routeId.value, ['messages', 'file-rules'].includes(activePage.value) && Boolean(routeId.value), true)
+    setRoute(activePage.value, routeId.value, routeEdit.value, true)
     return
   }
   if (isAuthenticated.value && !canManage.value && !['overview', 'tasks', 'logs'].includes(route.page)) {
     setRoute('overview', '', false, true)
     return
   }
-  if (route.page !== activePage.value || route.id !== routeId.value) hasUnsavedMessageChanges.value = false
+  if (route.page !== activePage.value || route.id !== routeId.value || route.edit !== routeEdit.value) hasUnsavedMessageChanges.value = false
   activePage.value = route.page
   routeId.value = route.id
+  routeEdit.value = route.edit
   selectedTaskId.value = route.page === 'tasks' ? route.id : ''
   selectedExecutionId.value = route.page === 'logs' ? route.id : ''
   if (route.page === 'logs' && !route.id && !loading.value) {
     const query = new URLSearchParams(window.location.search)
-    const restored = {page: Math.max(1, Number(query.get('logs.page')) || 1), size: Number(query.get('logs.size')) || 10, keyword: query.get('logs.q') || '', status: query.get('logs.status') || 'ALL'}
+    const restored = {page: Math.max(1, Number(query.get('logs.page')) || 1), size: Number(query.get('logs.size')) || 10, keyword: query.get('logs.q') || '', status: query.get('logs.status') || 'ALL', messageType: query.get('logs.messageType') || 'ALL', dataItemCode: query.get('logs.dataItemCode') || '', failureStage: query.get('logs.failureStage') || '', startTime: query.get('logs.startTime') || '', endTime: query.get('logs.endTime') || ''}
     if (Object.entries(restored).some(([key, value]) => executionPage[key] !== value)) queryExecutions(restored)
   }
   if (route.page === 'logs' && route.id && !loading.value && !executions.value.some(row => row.id === route.id) && !pendingActions.has('query:executions')) {
@@ -237,10 +254,13 @@ onBeforeUnmount(() => {
   window.removeEventListener('popstate', syncRoute)
   window.removeEventListener('app-route', syncRoute)
   clearTimeout(toastTimer)
+  clearTimeout(sessionWarningTimer)
 })
 
 /** 清空认证态和已加载业务数据，防止会话失效后旧数据继续停留在页面。 */
 function requireLogin() {
+  clearTimeout(sessionWarningTimer)
+  sessionExpiring.value = false
   currentUser.value = null
   loginError.value = '登录状态已失效，请重新登录'
   loading.value = false
@@ -262,11 +282,14 @@ async function initialize() {
     const session = await api.getSession()
     currentUser.value = isAuthenticatedUser(session) ? session : null
     api.setUnauthorizedHandler(requireLogin)
+    api.setSessionActivityHandler(scheduleSessionWarning)
+    if (currentUser.value) scheduleSessionWarning(session)
     if (currentUser.value) await loadAll()
   } catch (error) {
     loginError.value = error.status === 401 ? '' : error.message
   } finally {
     api.setUnauthorizedHandler(requireLogin)
+    api.setSessionActivityHandler(scheduleSessionWarning)
     checkingAuthentication.value = false
   }
 }
@@ -278,6 +301,7 @@ async function login(credentials) {
     const user = await api.login(credentials)
     if (!isAuthenticatedUser(user)) throw new Error('登录响应缺少用户名，请检查后端认证服务')
     currentUser.value = user
+    scheduleSessionWarning(user)
     await loadAll()
   } catch (error) {
     currentUser.value = null
@@ -312,7 +336,7 @@ async function loadAll(showLoading = true) {
     ['消息云组件', () => api.list('message-components'), rows => { components.value = rows.map(flattenResource) }],
     ['报文模板', () => api.list('messages'), rows => { templates.value = rows.map(normalizeTemplate) }],
     ['文件规则模板', () => api.list('file-rule-templates'), rows => { fileRuleTemplates.value = rows.map(flattenResource) }],
-    ['任务', () => api.list('tasks'), rows => { tasks.value = rows.map(flattenResource) }],
+    ['任务', () => api.list('tasks'), rows => { tasks.value = rows.map(flattenResource).map(normalizeTaskForView) }],
     ['执行记录', () => api.listExecutions(executionQuery), rows => { if (isLatestExecution()) applyExecutionPage(rows) }],
     ['运行统计', () => api.getExecutionAnalytics(analyticsRange.value), rows => { executionAnalytics.value = rows || {} }]
   ]
@@ -350,10 +374,13 @@ async function queryExecutions(query = {}) {
   executionPage.size = Number(query.size || executionPage.size || 10)
   executionPage.keyword = query.keyword == null ? executionPage.keyword : String(query.keyword)
   executionPage.status = query.status || executionPage.status || 'ALL'
+  for (const key of ['messageType', 'dataItemCode', 'failureStage', 'startTime', 'endTime']) {
+    if (query[key] != null) executionPage[key] = query[key]
+  }
   // 详情定位查询不覆盖列表条件，返回列表时从原查询参数恢复。
   if (!routeId.value && activePage.value === 'logs') {
     const params = new URLSearchParams(window.location.search)
-    for (const [key, value] of Object.entries({q: executionPage.keyword, status: executionPage.status, page: executionPage.page, size: executionPage.size})) params.set('logs.' + key, String(value))
+    for (const [key, value] of Object.entries({q: executionPage.keyword, status: executionPage.status, page: executionPage.page, size: executionPage.size, messageType: executionPage.messageType, dataItemCode: executionPage.dataItemCode, failureStage: executionPage.failureStage, startTime: executionPage.startTime, endTime: executionPage.endTime})) params.set('logs.' + key, String(value))
     window.history.replaceState(window.history.state, '', window.location.pathname + '?' + params.toString())
   }
   pendingActions.add('query:executions')
@@ -671,6 +698,7 @@ onMounted(initialize)
           </button>
         </div>
       </header>
+      <aside v-if="sessionExpiring" class="notice session-warning" role="alert"><b>登录状态将在 5 分钟内失效</b><span>请先保存当前表单；继续操作产生新的服务请求后，会话时间会重新计算。</span></aside>
       <PageSkeleton v-if="loading"/>
       <aside v-if="!loading && Object.values(resourceErrors).some(Boolean)" class="notice" role="alert">
         <b>部分数据更新失败，已保留上次结果</b>
@@ -729,6 +757,9 @@ onMounted(initialize)
   gap: 11px;
   white-space: nowrap;
 }
+.session-warning { margin: 12px 20px 0; }
+.session-warning b, .session-warning span { display: block; }
+.session-warning span { margin-top: 3px; }
 
 .account-name {
   color: #434343;

@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import { formatDateTime } from '../date-time.mjs'
+import {taskReadinessIssue} from '../task-readiness.mjs'
 
 const props = defineProps({
   canManage: {type: Boolean, default: false},
@@ -17,14 +18,11 @@ const props = defineProps({
 })
 const emit = defineEmits(['navigate', 'task-action', 'open-execution', 'refresh-overview', 'filter-logs'])
 const hoveredPoint = ref(null)
-const incompleteTasks = computed(() => props.tasks.filter(task => !props.templates.some(template => template.id === task.messageId)))
+const incompleteTasks = computed(() => props.tasks.filter(task => taskReadinessIssue(task, props.templates, props.components)))
 const checkedComponents = computed(() => props.components.filter(item => props.connectionChecks[item.id + ':']))
 const failedConnections = computed(() => checkedComponents.value.filter(item => !props.connectionChecks[item.id + ':'].success))
 const attentionTasks = computed(() => props.tasks.flatMap(task => {
-  const template = props.templates.find(item => item.id === task.messageId)
-  const targets = template?.deliveryTargets || []
-  const reason = !template ? '关联模板不存在' : !targets.length ? '模板未配置投递目标'
-    : targets.some(target => !props.components.some(component => component.id === target.componentId && component.status !== 'DISABLED')) ? '投递目标不存在或已停用' : ''
+  const reason = taskReadinessIssue(task, props.templates, props.components)
   return reason ? [{task, reason}] : []
 }))
 
@@ -211,7 +209,7 @@ const sparkPoints = points => {
       <div class="readiness-grid">
         <div><b>消息云组件</b><p>{{ components.length }} 个 · {{ components.length - checkedComponents.length }} 个未检测 · {{ failedConnections.length }} 个最近检测失败</p><button class="link-button" @click="emit('navigate', 'message-components')">检查连接</button></div>
         <div><b>报文模板</b><p>{{ templates.length }} 份配置</p><button class="link-button" @click="emit('navigate', 'messages')">维护模板</button></div>
-        <div><b>任务配置</b><p>{{ incompleteTasks.length }} 个任务未找到关联模板</p><button class="link-button" @click="emit('navigate', 'tasks')">检查任务</button></div>
+        <div><b>任务配置</b><p>{{ incompleteTasks.length }} 个任务存在目标配置问题</p><button class="link-button" @click="emit('navigate', 'tasks')">检查任务</button></div>
         <div><b>执行结果</b><p>按批次查看失败阶段和原因</p><button class="link-button" @click="emit('navigate', 'logs')">查看执行记录</button></div>
       </div>
     </section>

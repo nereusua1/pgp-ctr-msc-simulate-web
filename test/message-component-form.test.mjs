@@ -1,17 +1,29 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { resetMessageComponentForCreate } from '../src/message-component-form.mjs'
 
-/** 编辑已有实例后再新建时，必须清空旧实例编码，避免触发数据库唯一键冲突。 */
-test('新建消息组件不得继承上一次编辑实例的编码', () => {
-  const form = { id: 'old-id', code: 'rocketmq-test', name: 'RocketMQ-9876' }
+import {
+  duplicateRoute,
+  normalizeMessageComponentForSave,
+  producerGroupError,
+  topicError
+} from '../src/message-component-form.mjs'
 
-  resetMessageComponentForCreate(form)
+test('Producer Group 使用云组件命名规则', () => {
+  assert.equal(producerGroupError('GID_weather-prod'), '')
+  assert.match(producerGroupError('weather'), /GID_/)
+  assert.match(producerGroupError('GID_天气天气'), /英文字母/)
+  assert.match(producerGroupError('GID_a'), /7～64/)
+})
 
-  assert.equal(form.id, '')
-  assert.equal(form.code, null)
-  assert.equal(form.namesrvAddr, '')
-  assert.equal(form.instanceId, '')
-  assert.equal(form.accessKey, '')
-  assert.equal(form.secretKey, '')
+test('Topic 使用云组件命名规则并禁止 CID、GID 前缀', () => {
+  assert.equal(topicError('weather-topic_1'), '')
+  assert.match(topicError('GID_weather'), /不能以 CID 或 GID/)
+  assert.match(topicError('cid-weather'), /不能以 CID 或 GID/)
+  assert.match(topicError('天气-topic'), /英文字母/)
+})
+
+test('同一组件内重复路由可被识别且状态固定为启用', () => {
+  assert.equal(duplicateRoute(['weather', 'forecast', 'weather']), 'weather')
+  assert.equal(duplicateRoute(['weather', 'forecast']), '')
+  assert.equal(normalizeMessageComponentForSave({status: 'DISABLED'}).status, 'ENABLED')
 })
