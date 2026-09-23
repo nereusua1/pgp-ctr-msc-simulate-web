@@ -55,6 +55,22 @@ test('数组通配符绑定应替换 records 中的每一条记录', () => {
   assert.deepEqual(result.warnings, [])
 })
 
+test('实况时间按 period_interval 向下对齐，间隔为空时保留当前时间', () => {
+  const realtime = {
+    ...template,
+    businessType: 'REALTIME',
+    content: JSON.stringify({time: 'old'}),
+    bindings: [{path: '$.time', provider: 'PLANNED_TRIGGER_TIME'}]
+  }
+  const aligned = preGenerateMessage({...realtime, dataBinding: {elements: [{period_interval: 5}]}}, '2026-09-08T09:58:27')
+  const exact = preGenerateMessage({...realtime, dataBinding: {elements: [{period_interval: null}]}}, '2026-09-08T09:58:27')
+
+  assert.equal(JSON.parse(aligned.content).time, '2026-09-08 09:55:00')
+  assert.equal(aligned.businessBaseAt, '2026-09-08 09:55:00')
+  assert.equal(JSON.parse(exact.content).time, '2026-09-08 09:58:27')
+  assert.equal(exact.businessBaseAt, '2026-09-08 09:58:27')
+})
+
 test('FILE 预生成按配置替换文件名时间且不追加系统后缀', () => {
   const result = preGenerateMessage({...template, type:'FILE', content:JSON.stringify({fileName:'SUN_RISE111_20180907_20190907.csv', filePath:'http://localhost/files/SUN_RISE111_20180907_20190907.csv'}), fileGeneration:{sourceFileName:'SUN_RISE111_20180907_20190907.csv', fileNameBindings:[{index:0, format:'yyyyMMdd', source:'BUSINESS_BASE_TIME'}, {index:1, format:'yyyyMMdd', source:'PRESERVE_OFFSET', relativeTo:0}]}, bindings:[]}, '2026-09-08T14:00:00')
   assert.equal(result.fileName, 'SUN_RISE111_20260908_20270908.csv')

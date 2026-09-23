@@ -80,10 +80,10 @@ const valueProviders = [
   ['CONSTANT', '固定常量']
 ]
 const availableValueProviders = computed(() => form.businessType === 'REALTIME'
-  ? valueProviders.filter(([provider]) => provider !== 'PERIOD_END_TIME')
+  ? valueProviders.filter(([provider]) => ['MESSAGE_ID', 'PLANNED_TRIGGER_TIME', 'CONSTANT'].includes(provider))
   : valueProviders)
 const availableFileTimeSources = computed(() => form.businessType === 'REALTIME'
-  ? FILE_TIME_SOURCES.filter(([category]) => category !== 'FORECAST_TIME')
+  ? FILE_TIME_SOURCES.filter(([category]) => category === 'CURRENT_TIME')
   : FILE_TIME_SOURCES)
 const businessTypeLabel = value => ({REALTIME: '实况', FORECAST: '预报', UNKNOWN: '待确认'})[value] || '待确认'
 const valueBindingDraft = reactive({ path: '', provider: 'MESSAGE_ID', targetType: 'string', value: '', format: 'yyyy-MM-dd HH:mm:ss' })
@@ -142,7 +142,7 @@ const messageSourceOptions = computed(() => {
     const code = template.dataBinding?.sourceCode
     if (code && !options.has(code)) options.set(code, template.dataBinding?.sourceName || code)
   }
-  return [...options].sort((left, right) => left[1].localeCompare(right[1], 'zh-CN'))
+  return [...options].sort((left, right) => left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0)
 })
 const filteredTemplates = computed(() => {
   const search = keyword.value.trim().toLowerCase()
@@ -332,7 +332,12 @@ function syncForm() {
   if ((isStructuredFile(form) || isUnstructuredFile(form)) && !form.fileGeneration) {
     form.fileGeneration = createFileGeneration({}, form.type)
   }
-  if (isStructuredFile(form) || isUnstructuredFile(form)) form.fileGeneration = normalizeFileGeneration(form.fileGeneration, form.type)
+  if (isStructuredFile(form) || isUnstructuredFile(form)) {
+    form.fileGeneration = normalizeFileGeneration(form.fileGeneration, form.type)
+    for (const binding of [...(form.fileGeneration.fileNameBindings || []), ...(form.fileGeneration.contentBindings || [])]) {
+      normalizeFileTimeSelection(binding, form.businessType)
+    }
+  }
   fileInspection.value = null
   Object.assign(valueBindingDraft, { path: '', provider: 'MESSAGE_ID', targetType: 'string', value: '', format: 'yyyy-MM-dd HH:mm:ss' })
   bindingSection.value = 'time'
@@ -623,13 +628,6 @@ function toggleTargetComponent(component, checked) {
   form.componentIds = targets.map(item => item.componentId)
   form.componentId = form.componentIds[0] || ''
 }
-function addTargetForComponent(component) {
-  const target = {targetId: createRequestId(), componentId: component.id, type: component.type || 'ROCKETMQ', producerGroup: '', topic: ''}
-  form.deliveryTargets = [...(form.deliveryTargets || []), target]
-  form.componentIds = form.deliveryTargets.map(item => item.componentId)
-  form.componentId = form.componentIds[0] || ''
-  activeTargetComponentId.value = target.targetId
-}
 function validateTargets() {
   for (const target of form.deliveryTargets || []) {
     emit('check-component', { id: target.componentId, topic: target.topic })
@@ -747,8 +745,8 @@ function timeStrategyDescription(strategy) {
 }
 function normalizeBindingsForBusinessType() {
   form.bindings = (form.bindings || []).map(binding => normalizeTimeBinding(binding, form.businessType))
-  if (form.businessType === 'REALTIME' && valueBindingDraft.provider === 'PERIOD_END_TIME') {
-    valueBindingDraft.provider = 'BUSINESS_BASE_TIME'
+  if (form.businessType === 'REALTIME' && ['BUSINESS_BASE_TIME', 'PERIOD_END_TIME'].includes(valueBindingDraft.provider)) {
+    valueBindingDraft.provider = 'PLANNED_TRIGGER_TIME'
   }
   if (form.businessType === 'REALTIME' && form.fileGeneration) {
     for (const binding of [...(form.fileGeneration.fileNameBindings || []), ...(form.fileGeneration.contentBindings || [])]) {
@@ -759,14 +757,20 @@ function normalizeBindingsForBusinessType() {
 function normalizeFileTimeSelection(binding, businessType = form.businessType) {
   const source = binding.provider || binding.source || 'BUSINESS_BASE_TIME'
   let category = binding.sourceCategory || fileTimeCategory(source)
-  if (businessType === 'REALTIME' && category === 'FORECAST_TIME') category = 'ISSUE_TIME'
+  if (businessType === 'REALTIME') category = 'CURRENT_TIME'
   const options = fileTimeOptions(category)
   binding.sourceCategory = category
-  binding.source = options.some(option => option[0] === source) ? source : options[0][0]
+  binding.source = businessType === 'REALTIME'
+    ? 'PLANNED_TRIGGER_TIME'
+    : (options.some(option => option[0] === source) ? source : options[0][0])
   delete binding.provider
   return binding
 }
-function fileTimeMethods(binding) { return fileTimeOptions(binding.sourceCategory || fileTimeCategory(binding.source)) }
+function fileTimeMethods(binding) {
+  return form.businessType === 'REALTIME'
+    ? fileTimeOptions('CURRENT_TIME').filter(([source]) => source === 'PLANNED_TRIGGER_TIME')
+    : fileTimeOptions(binding.sourceCategory || fileTimeCategory(binding.source))
+}
 function changeFileTimeCategory(binding) { binding.source = fileTimeOptions(binding.sourceCategory)[0][0] }
 function toggleTimeBinding(field) {
   const list = [...(form.bindings || [])]
@@ -1046,7 +1050,7 @@ function confirmDelete() {
         <nav class="tabs" role="tablist" aria-label="报文配置步骤"><button v-for="(tab, index) in configurationTabs" :key="tab[0]" type="button" role="tab" :data-config-tab="tab[0]" :aria-controls="`config-panel-${tab[0]}`" :aria-selected="activeTab === tab[0]" :tabindex="activeTab === tab[0] ? 0 : -1" :class="{ active: activeTab === tab[0], complete: !tabIssueCount(tab[0]) }" @click="selectConfigurationTab(tab[0])" @keydown="handleConfigurationTabKey($event, tab[0])"><i>{{ index + 1 }}</i><span>{{ tab[1] }}</span><small v-if="tabIssueCount(tab[0])" class="tab-issue-count">{{ tabIssueCount(tab[0]) }}</small></button></nav>
       </header>
       <div class="editor-main">
-      <section v-if="activeTab === 'basic'" id="config-panel-basic" class="config-panel" role="tabpanel"><div class="card-heading"><div><h2>基本信息</h2><p>业务类型和结构化 FILE 的处理方式由报文本身明确声明。</p></div></div><div class="form-grid"><label>报文名称<input v-model="form.name"></label><label>报文类型<select v-model="form.type"><option value="JSON">JSON 报文</option><option value="FILE">结构化 FILE</option><option value="UNSTRUCTURED_FILE">非结构化 FILE</option></select></label><label v-if="isStructuredFile(form)">报文处理方式（必填）<select v-model="form.fileGeneration.processingMode" @change="changeFileProcessingMode"><option value="" disabled>请选择</option><option value="RULE_DRIVEN">按规则生成</option><option value="ORIGINAL_MESSAGE">原报文直发</option></select><small>选择后，系统会立即调整后续配置步骤并清理互斥字段。</small></label><label v-else-if="isUnstructuredFile(form)">报文处理方式<input value="二进制文件复制" disabled></label><label>业务类型<select v-model="form.businessType" @change="normalizeBindingsForBusinessType"><option value="UNKNOWN" disabled>请选择</option><option value="REALTIME">实况</option><option value="FORECAST">预报</option></select><small>实况直接使用任务触发时间；预报按数据项的起报点、时段和间隔生成。</small></label><label>业务描述<input v-model="form.description"></label><label v-if="!isUnstructuredFile(form) && !isOriginalMessage(form)">默认编码<select v-model="form.encoding"><option>UTF-8</option><option>GBK</option></select></label></div><div v-if="isOriginalMessage(form)" class="notice original-message-notice"><b>系统将按发布版本原样发送正文，不处理正文引用的文件。</b><span>时间、Message ID、文件名、路径、空格、字段顺序、换行和转义形式均保持不变。</span></div></section>
+      <section v-if="activeTab === 'basic'" id="config-panel-basic" class="config-panel" role="tabpanel"><div class="card-heading"><div><h2>基本信息</h2><p>业务类型和结构化 FILE 的处理方式由报文本身明确声明。</p></div></div><div class="form-grid"><label>报文名称<input v-model="form.name"></label><label>报文类型<select v-model="form.type"><option value="JSON">JSON 报文</option><option value="FILE">结构化 FILE</option><option value="UNSTRUCTURED_FILE">非结构化 FILE</option></select></label><label v-if="isStructuredFile(form)">报文处理方式（必填）<select v-model="form.fileGeneration.processingMode" @change="changeFileProcessingMode"><option value="" disabled>请选择</option><option value="RULE_DRIVEN">按规则生成</option><option value="ORIGINAL_MESSAGE">原报文直发</option></select><small>选择后，系统会立即调整后续配置步骤并清理互斥字段。</small></label><label v-else-if="isUnstructuredFile(form)">报文处理方式<input value="二进制文件复制" disabled></label><label>业务类型<select v-model="form.businessType" @change="normalizeBindingsForBusinessType"><option value="UNKNOWN" disabled>请选择</option><option value="REALTIME">实况</option><option value="FORECAST">预报</option></select><small>实况只使用当前时间；period_interval 有值时向下对齐到最近间隔点，为空时直接使用任务时间。预报按数据项的起报点、时段和间隔生成。</small></label><label>业务描述<input v-model="form.description"></label><label v-if="!isUnstructuredFile(form) && !isOriginalMessage(form)">默认编码<select v-model="form.encoding"><option>UTF-8</option><option>GBK</option></select></label></div><div v-if="isOriginalMessage(form)" class="notice original-message-notice"><b>系统将按发布版本原样发送正文，不处理正文引用的文件。</b><span>时间、Message ID、文件名、路径、空格、字段顺序、换行和转义形式均保持不变。</span></div></section>
       <section v-else-if="activeTab === 'content'" id="config-panel-content" class="config-panel" role="tabpanel"><div class="card-heading"><div><h2>{{ isOriginalMessage(form) ? '原报文正文' : '报文内容' }}</h2><p>{{ isOriginalMessage(form) ? '保存原始字符序列；执行时不会格式化、替换字段或修改空格与换行。' : '使用 JSON 结构与变量占位符定义最终报文。' }}</p></div><button v-if="!isOriginalMessage(form)" class="button secondary" @click="formatContent">格式化 / 校验</button></div><textarea v-model="form.content" class="code-editor" spellcheck="false"></textarea><div v-if="isOriginalMessage(form)" class="notice subtle"><b>正文 SHA-256：</b><code>{{ contentSha256(form) }}</code></div><div class="button-row"><button class="button secondary" @click="editorPreview = true">查看原文</button></div></section>
       <section v-else-if="activeTab === 'data'" id="config-panel-data" class="config-panel" role="tabpanel"><div class="card-heading"><div><h2>数据关联</h2><p>依次选择数据源、该数据源提供的数据项，以及参与报文生成的要素项。</p></div></div><div class="data-linkage-grid">
         <section class="linkage-step"><h3><span>1</span>选择数据源</h3><p>按来源编码或中文名称远程搜索，最多返回 20 条。</p><label class="catalog-search">搜索数据源<input v-model="sourceKeyword" placeholder="输入来源编码或中文名称"></label><div class="catalog-options"><button v-for="item in sourceOptions" :key="item.code" type="button" :class="{ selected: form.dataBinding?.sourceCode === item.code }" @click="chooseDataSource(item)"><code>{{ item.code }}</code><b>{{ item.name || '未配置中文名称' }}</b><small>{{ item.dataItemCount }} 个数据项</small></button><div v-if="catalogLoading.sources" class="catalog-empty">正在搜索…</div><div v-else-if="!sourceOptions.length" class="catalog-empty">没有匹配的数据源</div></div></section>
@@ -1102,7 +1106,7 @@ function confirmDelete() {
             <label class="binding-select-all"><input type="checkbox" :checked="allTimeFieldsSelected" :indeterminate="someTimeFieldsSelected && !allTimeFieldsSelected" aria-label="全选时间字段替换" @change="toggleAllTimeBindings"><span>{{ allTimeFieldsSelected ? '取消全选' : '全选' }}</span></label>
             <button class="button secondary" type="button" :disabled="!detectedTimeFields.length" @click="bindAllTimeFields">应用推荐规则</button>
           </div>
-          <div class="time-rule-context"><div><span>当前时间</span><b>本次任务触发时间</b></div><i>→</i><div><span>起报时间</span><b>{{ form.businessType === 'FORECAST' ? '按数据项起报点确定' : '与任务触发时间一致' }}</b></div><i>→</i><div><span>预报时间</span><b>{{ form.businessType === 'FORECAST' ? '按数据项时段和间隔生成' : '实况不使用' }}</b></div></div>
+          <div class="time-rule-context"><div><span>当前时间</span><b>{{ form.businessType === 'REALTIME' ? '按可选数据间隔向下对齐' : '本次任务触发时间' }}</b></div><i>→</i><div><span>起报时间</span><b>{{ form.businessType === 'FORECAST' ? '按数据项起报点确定' : '实况不可选' }}</b></div><i>→</i><div><span>预报时间</span><b>{{ form.businessType === 'FORECAST' ? '按数据项时段和间隔生成' : '实况不可选' }}</b></div></div>
           <div v-if="!detectedTimeFields.length" class="binding-empty">没有识别到日期时间字段。请先在“报文内容”中填写支持的日期格式。</div>
           <div v-else-if="!visibleTimeFields.length" class="binding-empty">当前筛选条件下没有字段。</div>
           <div v-else class="mapping-list time-mapping-list">
@@ -1113,7 +1117,7 @@ function confirmDelete() {
               <div class="mapping-rule" :class="{ disabled: !timeBindingOf(field.path) }"><label><span class="visually-hidden">生成方式</span><select :disabled="!timeBindingOf(field.path)" :value="timeBindingOf(field.path)?.strategy || ''" :aria-label="`${field.field} 生成规则`" @change="updateTimeStrategy(field, $event.target.value)"><option v-for="strategy in timeStrategiesForPath(field.path, form.businessType)" :key="strategy[0]" :value="strategy[0]">{{ strategy[1] }}</option></select></label></div>
             </article>
           </div>
-          <div class="binding-help"><b>时间来源说明</b><p><strong>当前时间：</strong>{{ timeStrategyDescription('TASK_TRIGGER_TIME') }}<strong>起报时间：</strong>{{ timeStrategyDescription('BUSINESS_BASE_TIME') }}</p><p v-if="form.businessType === 'FORECAST'"><strong>预报时间：</strong>{{ timeStrategyDescription('DATA_INTERVAL_SEQUENCE') }}<strong>预报结束时间：</strong>{{ timeStrategyDescription('PERIOD_END_TIME') }}</p><small>{{ form.businessType === 'FORECAST' ? '预报使用数据项的 period、period_interval 和 pre_time_point；参数不符合文件要求时请先修改数据项。' : '实况直接使用任务触发时间，不读取或强制校验预报时段、间隔和预报时点。' }}</small></div>
+          <div class="binding-help"><b>时间来源说明</b><p><strong>当前时间：</strong>{{ timeStrategyDescription('TASK_TRIGGER_TIME') }}<strong v-if="form.businessType === 'FORECAST'">起报时间：</strong>{{ form.businessType === 'FORECAST' ? timeStrategyDescription('BUSINESS_BASE_TIME') : '' }}</p><p v-if="form.businessType === 'FORECAST'"><strong>预报时间：</strong>{{ timeStrategyDescription('DATA_INTERVAL_SEQUENCE') }}<strong>预报结束时间：</strong>{{ timeStrategyDescription('PERIOD_END_TIME') }}</p><small>{{ form.businessType === 'FORECAST' ? '预报使用数据项的 period、period_interval 和 pre_time_point；参数不符合文件要求时请先修改数据项。' : '实况仅可选择当前时间；period_interval 为空时不对齐，也不读取 period 和 pre_time_point。' }}</small></div>
         </section>
 
         <section v-else class="binding-workspace" aria-label="系统字段绑定">
@@ -1135,7 +1139,7 @@ function confirmDelete() {
         <div class="card-heading"><div><h2>默认投递目标</h2><p>所有 JSON 和文件处理结果都作为报文正文，通过 RocketMQ 的 Group 和 Topic 发送。</p></div><button class="button secondary" :disabled="!hasCompleteTargets() || targetValidationPending" @click="validateTargets">{{ targetValidationPending ? '正在验证…' : '验证全部目标' }}</button></div>
         <div class="target-form">
           <fieldset class="target-instance-field"><legend>投递目标实例（可多选）</legend><div class="instance-options">
-            <label v-for="item in rocketComponents" :key="item.id" class="instance-option" :class="{ selected: isTargetSelected(item.id) }"><input type="checkbox" :checked="isTargetSelected(item.id)" @change="toggleTargetComponent(item, $event.target.checked)"><span><b>{{ item.name }}</b><small>RocketMQ · {{ item.namesrvAddr || item.nameServer }}</small></span><button class="link-button small" type="button" @click.prevent="addTargetForComponent(item)">添加目标</button></label>
+            <label v-for="item in rocketComponents" :key="item.id" class="instance-option" :class="{ selected: isTargetSelected(item.id) }"><input type="checkbox" :checked="isTargetSelected(item.id)" @change="toggleTargetComponent(item, $event.target.checked)"><span><b>{{ item.name }}</b><small>RocketMQ · {{ item.namesrvAddr || item.nameServer }}</small></span></label>
           </div><p v-if="!form.deliveryTargets?.length" class="field-error">请至少选择一个 MQ 实例。</p></fieldset>
           <template v-if="form.deliveryTargets?.length">
             <span class="target-tabs-label">已选实例配置</span>
@@ -1319,7 +1323,7 @@ body .page .message-detail .detail-format { color: #5c6d84; font: 500 14px/1.55 
 .config-panel .form-grid label { font-size: var(--type-form-label); }.config-panel .form-grid input, .config-panel .form-grid select { min-height: var(--control-height); color: var(--text); font-size: var(--type-form-body); }.config-panel .code-editor { font-size: var(--type-form-body); }
 .published-edit-notice { display: flex; align-items: center; gap: 12px; margin: 0 0 12px; padding: 11px 14px; border: 1px solid #ffd591; border-radius: 6px; background: var(--amber-soft); color: #d46b08; font-size: var(--type-form-label); }.published-edit-notice b { flex: 0 0 auto; color: #ad4e00; }.published-edit-notice span { color: #874d00; }
 .data-linkage-grid { display: grid; grid-template-columns: 1.05fr 1fr 1.2fr; gap: 12px; }.linkage-step { min-width: 0; padding: 15px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fafafa; }.linkage-step.disabled { opacity: .62; }.linkage-step h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 4px; color: var(--ink); font-size: 15px; }.linkage-step h3 span { display: grid; width: 24px; height: 24px; place-items: center; border-radius: 50%; background: var(--blue); color: #fff; font-size: 12px; }.linkage-step > p { min-height: 40px; margin: 0 0 10px; color: var(--muted); font-size: var(--type-form-label); }.catalog-search { display: block; color: #526078; font-size: var(--type-form-label); font-weight: 650; }.catalog-search input { width: 100%; height: var(--control-height); margin-top: 7px; padding: 0 11px; border: 1px solid #d9d9d9; border-radius: var(--radius-sm); outline: 0; background: #fff; color: var(--text); font-size: var(--type-form-body); }.catalog-search input:focus { border-color: #1677ff; box-shadow: 0 0 0 3px #1677ff1a; }.catalog-options, .element-options { max-height: 270px; margin-top: 8px; overflow: auto; }.catalog-options > button { display: grid; width: 100%; gap: 3px; padding: 10px 11px; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; text-align: left; }.catalog-options > button:hover, .catalog-options > button.selected { border-color: #91caff; background: var(--blue-soft); }.catalog-options code { overflow: hidden; color: var(--management-link); font-size: var(--type-form-body); text-overflow: ellipsis; }.catalog-options b { overflow: hidden; color: var(--ink); font-size: var(--type-form-body); text-overflow: ellipsis; white-space: nowrap; }.catalog-options small, .element-options small { color: var(--muted); font-size: var(--type-form-label); }.catalog-empty { padding: 22px 8px; color: var(--muted); text-align: center; font-size: var(--type-form-body); }.select-all { width: 100%; margin-top: 8px; padding: 9px 10px; border: 1px solid #91caff; border-radius: var(--radius-sm); background: var(--blue-soft); color: var(--management-link); font-size: var(--type-form-label); text-align: left; }.element-options > label { display: flex; align-items: flex-start; gap: 8px; padding: 10px; border: 1px solid transparent; border-radius: var(--radius-sm); cursor: pointer; }.element-options > label:hover, .element-options > label.selected { border-color: #91caff; background: var(--blue-soft); }.element-options input { width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--blue); }.element-options span { min-width: 0; }.element-options b, .element-options small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.element-options b { font-size: var(--type-form-body); }.binding-summary { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-top: 14px; padding: 14px 16px; border: 1px solid #91caff; border-radius: var(--radius-md); background: var(--blue-soft); }.binding-summary b, .binding-summary small { display: block; }.binding-summary b { font-size: var(--type-form-body); }.binding-summary small { margin-top: 3px; color: var(--text); font-size: var(--type-form-label); }.binding-summary strong { flex: 0 0 auto; color: var(--management-link); font-size: var(--type-form-body); }.selected-element-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }.selected-element-chips span { padding: 4px 8px; border: 1px solid #91caff; border-radius: 4px; background: #fff; color: var(--management-link); font-size: var(--type-form-label); }
-.target-form { display: grid; gap: 18px; }.target-instance-field { min-width: 0; margin: 0; padding: 0; border: 0; }.target-instance-field legend { margin-bottom: 9px; color: #526078; font-size: var(--type-form-label); font-weight: 650; }.instance-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }.instance-option { display: flex; align-items: center; min-width: 0; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; cursor: pointer; transition: border-color .2s, background .2s; }.instance-option:hover { border-color: #a9bcf5; }.instance-option.selected { border-color: var(--blue); background: var(--blue-soft); }.instance-option input { width: 16px; height: 16px; margin: 0; accent-color: var(--blue); }.instance-option span { min-width: 0; }.instance-option b, .instance-option small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.instance-option b { color: var(--ink); font-size: var(--type-form-body); }.instance-option small { margin-top: 3px; color: var(--muted); font-size: var(--type-form-label); }.field-error { margin: 8px 0 0; color: var(--red); font-size: var(--type-form-label); }
+.target-form { display: grid; gap: 18px; }.target-instance-field { min-width: 0; margin: 0; padding: 0; border: 0; }.target-instance-field legend { margin-bottom: 9px; color: #526078; font-size: var(--type-form-label); font-weight: 650; }.instance-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }.instance-option { display: flex; align-items: center; min-width: 0; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; cursor: pointer; transition: border-color .2s, background .2s; }.instance-option:hover { border-color: #a9bcf5; }.instance-option.selected { border-color: var(--blue); background: var(--blue-soft); }.instance-option input { width: 16px; height: 16px; margin: 0; accent-color: var(--blue); }.instance-option span { min-width: 0; flex: 1; }.instance-option b, .instance-option small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.instance-option b { color: var(--ink); font-size: var(--type-form-body); }.instance-option small { margin-top: 3px; color: var(--muted); font-size: var(--type-form-label); }.field-error { margin: 8px 0 0; color: var(--red); font-size: var(--type-form-label); }
 .target-tabs-label { margin-bottom: -11px; color: #526078; font-size: var(--type-form-label); font-weight: 650; }
 .target-tabs { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; border-bottom: 1px solid var(--line); }.target-tabs button { min-width: 210px; padding: 10px 13px; border: 1px solid var(--line); border-bottom: 2px solid transparent; border-radius: var(--radius-sm) var(--radius-sm) 0 0; background: #f7f9fc; color: var(--text); text-align: left; }.target-tabs button:hover { border-color: #a9bcf5; }.target-tabs button.active { border-color: #a9bcf5; border-bottom-color: var(--blue); background: var(--blue-soft); color: var(--ink); }.target-tabs span, .target-tabs small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.target-tabs span { font-size: var(--type-form-body); font-weight: 650; }.target-tabs small { margin-top: 4px; color: var(--muted); font-size: var(--type-form-label); }.target-editor { padding: 16px; border: 1px solid #a9bcf5; border-radius: var(--radius-md); background: #f8faff; }.target-editor-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }.target-editor-heading b, .target-editor-heading small { display: block; }.target-editor-heading b { color: var(--ink); font-size: 15px; }.target-editor-heading small { margin-top: 3px; color: var(--muted); font-size: var(--type-form-label); }.target-editor-heading > span { padding: 4px 8px; border-radius: 7px; background: var(--blue-soft); color: var(--management-link); font-size: var(--type-form-label); }
 .topic-field, .group-field { min-width: 0; }.topic-combobox, .group-combobox { position: relative; margin-top: 7px; }.config-panel .form-grid .topic-combobox input, .config-panel .form-grid .group-combobox input { margin-top: 0; }.topic-suggestions, .group-suggestions { position: absolute; z-index: 8; top: calc(100% + 4px); right: 0; left: 0; max-height: 240px; padding: 4px; overflow-y: auto; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; box-shadow: 0 6px 16px #0000001f; }.topic-suggestions button, .group-suggestions button { display: block; width: 100%; padding: 9px 10px; overflow: hidden; border: 0; border-radius: 4px; background: transparent; color: var(--text); font: 500 var(--type-form-body)/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: left; text-overflow: ellipsis; white-space: nowrap; }.topic-suggestions button:hover, .topic-suggestions button.active, .group-suggestions button:hover, .group-suggestions button.active { background: var(--blue-soft); color: var(--management-link); }.topic-empty, .group-empty { display: block; padding: 10px; color: var(--muted); font-size: var(--type-form-label); text-align: center; }.topic-hint, .group-hint { display: block; margin-top: 6px; color: var(--muted); font-size: var(--type-form-label); font-weight: 400; }

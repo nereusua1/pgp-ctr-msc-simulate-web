@@ -6,8 +6,8 @@ export const TIME_STRATEGIES = [
 ]
 
 export const TIME_STRATEGY_DESCRIPTIONS = {
-  TASK_TRIGGER_TIME: '当前时间取本次任务的计划触发时间；历史补跑取用户指定时间，不读取数据项时间参数。',
-  BUSINESS_BASE_TIME: '起报时间在实况中等于本次触发时间；预报按数据项 pre_time_point 确定。',
+  TASK_TRIGGER_TIME: '当前时间取本次任务时间；实况在 period_interval 不为空时向下对齐到最近间隔点，为空时直接使用任务时间。',
+  BUSINESS_BASE_TIME: '起报时间仅用于预报，按数据项 pre_time_point 确定。',
   DATA_INTERVAL_SEQUENCE: '预报时间将原始值去重排序，从起报时间开始按数据项 period_interval 分钟依次生成。',
   PERIOD_END_TIME: '预报结束时间使用起报时间加数据项 period 小时，仅适用于预报数据。'
 }
@@ -24,6 +24,7 @@ function isStartTimePath(path) {
 }
 
 export function recommendedTimeStrategy(path, businessType = 'FORECAST') {
+  if (businessType === 'REALTIME') return 'TASK_TRIGGER_TIME'
   const normalized = String(path || '').toLowerCase()
   if (normalized.endsWith('endtime')) return businessType === 'REALTIME' ? 'BUSINESS_BASE_TIME' : 'PERIOD_END_TIME'
   if (isStartTimePath(path)) return 'BUSINESS_BASE_TIME'
@@ -32,19 +33,18 @@ export function recommendedTimeStrategy(path, businessType = 'FORECAST') {
 }
 
 export function timeStrategiesForPath(path, businessType = 'FORECAST') {
+  if (businessType === 'REALTIME') return TIME_STRATEGIES.filter(([strategy]) => strategy === 'TASK_TRIGGER_TIME')
   const strategies = isStartTimePath(path)
     ? TIME_STRATEGIES.filter(([strategy]) => strategy !== 'TASK_TRIGGER_TIME')
     : TIME_STRATEGIES
-  return businessType === 'REALTIME'
-    ? strategies.filter(([strategy]) => !['DATA_INTERVAL_SEQUENCE', 'PERIOD_END_TIME'].includes(strategy))
-    : strategies
+  return strategies
 }
 
 export function normalizeTimeBinding(binding, businessType = 'FORECAST') {
   if (!binding) return { ...binding }
   if (binding.kind === 'VALUE_RULE') {
-    return businessType === 'REALTIME' && binding.provider === 'PERIOD_END_TIME'
-      ? { ...binding, provider: 'BUSINESS_BASE_TIME' }
+    return businessType === 'REALTIME' && ['BUSINESS_BASE_TIME', 'PERIOD_END_TIME'].includes(binding.provider)
+      ? { ...binding, provider: 'PLANNED_TRIGGER_TIME' }
       : { ...binding }
   }
   if (binding.kind !== 'TIME_RULE' && binding.kind !== 'TIME_OFFSET') return { ...binding }
@@ -54,8 +54,8 @@ export function normalizeTimeBinding(binding, businessType = 'FORECAST') {
     strategy: binding.strategy || recommendedTimeStrategy(binding.path, businessType),
     format: binding.format || 'yyyy-MM-dd HH:mm:ss'
   }
-  if (normalized.strategy === 'TASK_TRIGGER_TIME' && isStartTimePath(normalized.path)) normalized.strategy = 'BUSINESS_BASE_TIME'
-  if (businessType === 'REALTIME' && ['DATA_INTERVAL_SEQUENCE', 'PERIOD_END_TIME'].includes(normalized.strategy)) normalized.strategy = 'BUSINESS_BASE_TIME'
+  if (businessType === 'REALTIME') normalized.strategy = 'TASK_TRIGGER_TIME'
+  else if (normalized.strategy === 'TASK_TRIGGER_TIME' && isStartTimePath(normalized.path)) normalized.strategy = 'BUSINESS_BASE_TIME'
   delete normalized.offset
   return normalized
 }

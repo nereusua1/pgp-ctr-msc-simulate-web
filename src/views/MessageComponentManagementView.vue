@@ -46,6 +46,11 @@ const groupInput = ref(null)
 const topicInput = ref(null)
 const entryErrors = reactive({producerGroups: '', topics: ''})
 const duplicateEntries = reactive({producerGroups: '', topics: ''})
+const routeQueries = reactive({producerGroups: '', topics: ''})
+const routePages = reactive({producerGroups: 1, topics: 1})
+const routeNotices = reactive({producerGroups: '', topics: ''})
+const recentlyAdded = reactive({producerGroups: '', topics: ''})
+const routePageSize = 8
 const persistedGroups = ref(new Set())
 const form = reactive({ id: '', code: null, type: 'ROCKETMQ', name: '', namesrvAddr: '', instanceId: '', accessKey: '', secretKey: '', secretConfigured: false, producerGroups: [], topics: [], status: 'ENABLED' })
 const isPending = key => props.pendingActions.has(key)
@@ -121,6 +126,54 @@ function resetEditorState() {
   entryErrors.topics = ''
   duplicateEntries.producerGroups = ''
   duplicateEntries.topics = ''
+  routeQueries.producerGroups = ''
+  routeQueries.topics = ''
+  routePages.producerGroups = 1
+  routePages.topics = 1
+  routeNotices.producerGroups = ''
+  routeNotices.topics = ''
+  recentlyAdded.producerGroups = ''
+  recentlyAdded.topics = ''
+}
+
+function routeLabel(key) {
+  return key === 'producerGroups' ? 'Producer Group' : 'Topic'
+}
+
+function filteredRouteEntries(key) {
+  const query = routeQueries[key].trim().toLowerCase()
+  return form[key].map((value, index) => ({value, index})).filter(entry => !query || entry.value.toLowerCase().includes(query))
+}
+
+function routeTotalPages(key) {
+  return Math.max(1, Math.ceil(filteredRouteEntries(key).length / routePageSize))
+}
+
+function visibleRouteEntries(key) {
+  const start = (routePages[key] - 1) * routePageSize
+  return filteredRouteEntries(key).slice(start, start + routePageSize)
+}
+
+function clearRouteFeedback(key) {
+  entryErrors[key] = ''
+  duplicateEntries[key] = ''
+  routeNotices[key] = ''
+  recentlyAdded[key] = ''
+}
+
+function updateRouteQuery(key, value) {
+  routeQueries[key] = value
+  routePages[key] = 1
+}
+
+function showDuplicateEntry(key, value) {
+  const label = routeLabel(key)
+  duplicateEntries[key] = value
+  recentlyAdded[key] = ''
+  routeNotices[key] = ''
+  routeQueries[key] = value
+  routePages[key] = 1
+  entryErrors[key] = `${label}“${value}”已存在，已在下方标出重复项。`
 }
 
 function addEntry(key, draft, label) {
@@ -129,8 +182,7 @@ function addEntry(key, draft, label) {
   if (!value) { entryErrors[key] = `请输入${label}`; focusEntry(key); return false }
   if (validationError) { entryErrors[key] = validationError; focusEntry(key); return false }
   if (form[key].some(item => item.trim() === value)) {
-    duplicateEntries[key] = value
-    entryErrors[key] = `${label}已存在：${value}`
+    showDuplicateEntry(key, value)
     focusEntry(key)
     return false
   }
@@ -138,6 +190,10 @@ function addEntry(key, draft, label) {
   draft.value = ''
   entryErrors[key] = ''
   duplicateEntries[key] = ''
+  routeQueries[key] = ''
+  routePages[key] = Math.max(1, Math.ceil(form[key].length / routePageSize))
+  routeNotices[key] = `${label}“${value}”已添加到列表，当前共 ${form[key].length} 个。保存组件后正式生效。`
+  recentlyAdded[key] = value
   formError.value = ''
   focusEntry(key)
   return true
@@ -153,6 +209,9 @@ function removeEntry(key, index) {
     return
   }
   form[key].splice(index, 1)
+  routePages[key] = Math.min(routePages[key], routeTotalPages(key))
+  routeNotices[key] = `${routeLabel(key)}“${value}”已从待保存列表移除。`
+  recentlyAdded[key] = ''
   cancelEdit()
   formError.value = ''
 }
@@ -165,6 +224,8 @@ function beginAdd(key) {
   formError.value = ''
   entryErrors[key] = ''
   duplicateEntries[key] = ''
+  routeNotices[key] = ''
+  recentlyAdded[key] = ''
   focusEntry(key)
 }
 
@@ -208,8 +269,7 @@ function saveEdit(key, index, label) {
   if (!value) { entryErrors[key] = `${label}不能为空`; return }
   if (validationError) { entryErrors[key] = validationError; return }
   if (form[key].some((item, itemIndex) => itemIndex !== index && item.trim() === value)) {
-    duplicateEntries[key] = value
-    entryErrors[key] = `${label}已存在：${value}`
+    showDuplicateEntry(key, value)
     return
   }
   if (routeReferenceCount(key, form[key][index])) {
@@ -219,6 +279,10 @@ function saveEdit(key, index, label) {
   form[key][index] = value
   entryErrors[key] = ''
   duplicateEntries[key] = ''
+  routeNotices[key] = `${label}“${value}”已更新，保存组件后正式生效。`
+  recentlyAdded[key] = value
+  routeQueries[key] = value
+  routePages[key] = 1
   formError.value = ''
   cancelEdit()
 }
@@ -341,31 +405,37 @@ const {dirty: formDirty, confirmClose: confirmFormClose} = useFormLeaveGuard(
       <div class="collection-grid">
         <section class="collection-panel">
           <div class="collection-heading"><div><h3>Producer Group <span class="count-tag">{{ form.producerGroups.length }}</span></h3><p>任务发送时从已配置的发送组中选择一个。</p></div><button v-if="addingKey !== 'producerGroups'" class="button primary small" @click="beginAdd('producerGroups')"><AppIcon name="plus" :size="14" />添加 Group</button></div>
-          <div v-if="addingKey === 'producerGroups'" class="collection-add"><input ref="groupInput" v-model="groupDraft" placeholder="输入 Producer Group" aria-describedby="group-rule group-error" @input="entryErrors.producerGroups = ''; duplicateEntries.producerGroups = ''" @keyup.enter="addGroup" @keyup.esc="cancelAdd"><button class="button primary" @click="addGroup">确认</button><button class="button secondary" @click="cancelAdd">取消</button></div>
+          <div v-if="addingKey === 'producerGroups'" class="collection-add"><input ref="groupInput" v-model="groupDraft" placeholder="输入 Producer Group" aria-describedby="group-rule group-error" @input="clearRouteFeedback('producerGroups')" @keyup.enter="addGroup" @keyup.esc="cancelAdd"><button class="button primary" @click="addGroup">确认</button><button class="button secondary" @click="cancelAdd">取消</button></div>
           <small id="group-rule" class="route-rule">以 GID_ 或 GID- 开头，仅支持字母、数字、短横线和下划线，长度 7～64；创建后不能改名。</small>
-          <p v-if="entryErrors.producerGroups" id="group-error" class="field-error" role="alert">{{ entryErrors.producerGroups }}</p>
+          <p v-if="entryErrors.producerGroups" id="group-error" class="route-feedback error" role="alert"><b>添加失败</b><span>{{ entryErrors.producerGroups }}</span></p>
+          <p v-else-if="routeNotices.producerGroups" class="route-feedback success" role="status"><b>列表已更新</b><span>{{ routeNotices.producerGroups }}</span></p>
+          <div class="collection-toolbar"><SearchInput :model-value="routeQueries.producerGroups" aria-label="搜索 Producer Group" placeholder="搜索已添加的 Group" @update:model-value="updateRouteQuery('producerGroups', $event)"/><span>显示 {{ filteredRouteEntries('producerGroups').length }} / {{ form.producerGroups.length }}</span></div>
           <div class="collection-list">
-            <div v-for="(group, index) in form.producerGroups" :key="`group-${index}`" :class="['collection-row', { 'duplicate-route': duplicateEntries.producerGroups === group }]">
-              <span class="row-index">{{ index + 1 }}</span>
-              <template v-if="editingKey === 'producerGroups' && editingIndex === index"><input v-model="editingValue" autofocus aria-label="编辑 Producer Group" @keyup.enter="saveEdit('producerGroups', index, 'Producer Group')" @keyup.esc="cancelEdit"><button class="button primary small" @click="saveEdit('producerGroups', index, 'Producer Group')">保存</button><button class="button secondary small" @click="cancelEdit">取消</button></template>
-              <template v-else><code>{{ group }}</code><div class="row-actions"><button v-if="!persistedGroups.has(group)" class="link-button" @click="beginEdit('producerGroups', index)">编辑</button><span v-else class="locked-route">已创建</span><button class="link-button danger-text" :disabled="routeReferenceCount('producerGroups', group) > 0" @click="removeEntry('producerGroups', index)">删除</button></div></template>
+            <div v-for="entry in visibleRouteEntries('producerGroups')" :key="`group-${entry.index}`" :class="['collection-row', { 'duplicate-route': duplicateEntries.producerGroups === entry.value, 'recent-route': recentlyAdded.producerGroups === entry.value }]">
+              <span class="row-index">{{ entry.index + 1 }}</span>
+              <template v-if="editingKey === 'producerGroups' && editingIndex === entry.index"><input v-model="editingValue" autofocus aria-label="编辑 Producer Group" @keyup.enter="saveEdit('producerGroups', entry.index, 'Producer Group')" @keyup.esc="cancelEdit"><button class="button primary small" @click="saveEdit('producerGroups', entry.index, 'Producer Group')">保存</button><button class="button secondary small" @click="cancelEdit">取消</button></template>
+              <template v-else><code>{{ entry.value }}</code><span v-if="duplicateEntries.producerGroups === entry.value" class="route-state error">已存在</span><span v-else-if="recentlyAdded.producerGroups === entry.value" class="route-state success">刚刚添加</span><div class="row-actions"><button v-if="!persistedGroups.has(entry.value)" class="link-button" @click="beginEdit('producerGroups', entry.index)">编辑</button><span v-else class="locked-route">已创建</span><button class="link-button danger-text" :disabled="routeReferenceCount('producerGroups', entry.value) > 0" @click="removeEntry('producerGroups', entry.index)">删除</button></div></template>
             </div>
-            <div v-if="!form.producerGroups.length" class="empty-state compact">尚未配置 Producer Group</div>
+            <div v-if="!form.producerGroups.length" class="empty-state compact">尚未配置 Producer Group</div><div v-else-if="!filteredRouteEntries('producerGroups').length" class="empty-state compact">没有匹配的 Producer Group</div>
           </div>
+          <div v-if="filteredRouteEntries('producerGroups').length" class="collection-pagination"><span>第 {{ routePages.producerGroups }} / {{ routeTotalPages('producerGroups') }} 页</span><div><button class="button secondary small" :disabled="routePages.producerGroups === 1" @click="routePages.producerGroups -= 1">上一页</button><button class="button secondary small" :disabled="routePages.producerGroups === routeTotalPages('producerGroups')" @click="routePages.producerGroups += 1">下一页</button></div></div>
         </section>
         <section class="collection-panel">
           <div class="collection-heading"><div><h3>Topic <span class="count-tag">{{ form.topics.length }}</span></h3><p>独立维护 Topic，并可验证真实 RocketMQ 路由。</p></div><button v-if="addingKey !== 'topics'" class="button primary small" @click="beginAdd('topics')"><AppIcon name="plus" :size="14" />添加 Topic</button></div>
-          <div v-if="addingKey === 'topics'" class="collection-add"><input ref="topicInput" v-model="topicDraft" placeholder="输入 Topic" aria-describedby="topic-rule topic-error" @input="entryErrors.topics = ''; duplicateEntries.topics = ''" @keyup.enter="addTopic" @keyup.esc="cancelAdd"><button class="button primary" @click="addTopic">确认</button><button class="button secondary" @click="cancelAdd">取消</button></div>
+          <div v-if="addingKey === 'topics'" class="collection-add"><input ref="topicInput" v-model="topicDraft" placeholder="输入 Topic" aria-describedby="topic-rule topic-error" @input="clearRouteFeedback('topics')" @keyup.enter="addTopic" @keyup.esc="cancelAdd"><button class="button primary" @click="addTopic">确认</button><button class="button secondary" @click="cancelAdd">取消</button></div>
           <small id="topic-rule" class="route-rule">仅支持字母、数字、短横线和下划线，长度 3～64，不能以 CID 或 GID 开头。</small>
-          <p v-if="entryErrors.topics" id="topic-error" class="field-error" role="alert">{{ entryErrors.topics }}</p>
+          <p v-if="entryErrors.topics" id="topic-error" class="route-feedback error" role="alert"><b>添加失败</b><span>{{ entryErrors.topics }}</span></p>
+          <p v-else-if="routeNotices.topics" class="route-feedback success" role="status"><b>列表已更新</b><span>{{ routeNotices.topics }}</span></p>
+          <div class="collection-toolbar"><SearchInput :model-value="routeQueries.topics" aria-label="搜索 Topic" placeholder="搜索已添加的 Topic" @update:model-value="updateRouteQuery('topics', $event)"/><span>显示 {{ filteredRouteEntries('topics').length }} / {{ form.topics.length }}</span></div>
           <div class="collection-list">
-            <div v-for="(topic, index) in form.topics" :key="`topic-${index}`" :class="['collection-row', { 'duplicate-route': duplicateEntries.topics === topic }]">
-              <span class="row-index">{{ index + 1 }}</span>
-              <template v-if="editingKey === 'topics' && editingIndex === index"><input v-model="editingValue" autofocus aria-label="编辑 Topic" @keyup.enter="saveEdit('topics', index, 'Topic')" @keyup.esc="cancelEdit"><button class="button primary small" @click="saveEdit('topics', index, 'Topic')">保存</button><button class="button secondary small" @click="cancelEdit">取消</button></template>
-              <template v-else><code>{{ topic }}</code><div class="row-actions"><button class="link-button" :disabled="!form.id || isPending(`check:${form.id}:${topic.trim()}`)" @click="emit('check-component', { id: form.id, topic: topic.trim() })">{{ isPending(`check:${form.id}:${topic.trim()}`) ? '验证中…' : '验证' }}</button><button class="link-button" :disabled="routeReferenceCount('topics', topic) > 0" @click="beginEdit('topics', index)">编辑</button><button class="link-button danger-text" :disabled="routeReferenceCount('topics', topic) > 0" @click="removeEntry('topics', index)">删除</button></div></template>
+            <div v-for="entry in visibleRouteEntries('topics')" :key="`topic-${entry.index}`" :class="['collection-row', { 'duplicate-route': duplicateEntries.topics === entry.value, 'recent-route': recentlyAdded.topics === entry.value }]">
+              <span class="row-index">{{ entry.index + 1 }}</span>
+              <template v-if="editingKey === 'topics' && editingIndex === entry.index"><input v-model="editingValue" autofocus aria-label="编辑 Topic" @keyup.enter="saveEdit('topics', entry.index, 'Topic')" @keyup.esc="cancelEdit"><button class="button primary small" @click="saveEdit('topics', entry.index, 'Topic')">保存</button><button class="button secondary small" @click="cancelEdit">取消</button></template>
+              <template v-else><code>{{ entry.value }}</code><span v-if="duplicateEntries.topics === entry.value" class="route-state error">已存在</span><span v-else-if="recentlyAdded.topics === entry.value" class="route-state success">刚刚添加</span><div class="row-actions"><button class="link-button" :disabled="!form.id || isPending(`check:${form.id}:${entry.value.trim()}`)" @click="emit('check-component', { id: form.id, topic: entry.value.trim() })">{{ isPending(`check:${form.id}:${entry.value.trim()}`) ? '验证中…' : '验证' }}</button><button class="link-button" :disabled="routeReferenceCount('topics', entry.value) > 0" @click="beginEdit('topics', entry.index)">编辑</button><button class="link-button danger-text" :disabled="routeReferenceCount('topics', entry.value) > 0" @click="removeEntry('topics', entry.index)">删除</button></div></template>
             </div>
-            <div v-if="!form.topics.length" class="empty-state compact">尚未配置 Topic</div>
+            <div v-if="!form.topics.length" class="empty-state compact">尚未配置 Topic</div><div v-else-if="!filteredRouteEntries('topics').length" class="empty-state compact">没有匹配的 Topic</div>
           </div>
+          <div v-if="filteredRouteEntries('topics').length" class="collection-pagination"><span>第 {{ routePages.topics }} / {{ routeTotalPages('topics') }} 页</span><div><button class="button secondary small" :disabled="routePages.topics === 1" @click="routePages.topics -= 1">上一页</button><button class="button secondary small" :disabled="routePages.topics === routeTotalPages('topics')" @click="routePages.topics += 1">下一页</button></div></div>
         </section>
       </div>
       <p v-if="formError" class="status-badge negative editor-error">{{ formError }}</p>
@@ -381,23 +451,34 @@ const {dirty: formDirty, confirmClose: confirmFormClose} = useFormLeaveGuard(
 .component-editor-base { margin-top: 14px; }
 .three-column { grid-template-columns: 1.15fr 1.3fr .7fr; }
 .collection-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 16px; }
-.collection-panel { padding: 16px; border: 1px solid #e3e8ed; border-radius: 4px; background: #fafafa; }
+.collection-panel { min-width: 0; padding: 16px; border: 1px solid #e3e8ed; border-radius: 4px; background: #fafafa; }
 .collection-panel h3 { margin: 0 0 6px; }
 .collection-panel p { margin: 0 0 16px; color: #6b7b96; }
 .collection-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .count-tag { display: inline-grid; min-width: 22px; height: 22px; margin-left: 5px; place-items: center; border-radius: 4px; background: #e6f4ff; color: #1677ff; font-size: 12px; font-weight: 600; vertical-align: 2px; }
 .collection-add { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; margin-bottom: 12px; padding: 10px; border: 1px solid #c6e2ff; border-radius: 4px; background: #ecf5ff; }
 .collection-add input, .collection-row input { min-width: 0; margin-top: 0; }
+.collection-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; margin: 12px 0 10px; }
+.collection-toolbar > span { color: #52647c; font-size: 13px; font-weight: 600; white-space: nowrap; }
+.route-feedback { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 8px; margin: 0 0 10px; padding: 10px 12px; border: 1px solid; border-radius: 6px; font-size: 13px; line-height: 1.55; }
+.route-feedback b { white-space: nowrap; }
+.route-feedback.error { border-color: #ff7875; background: #fff1f0; color: #a8071a; }
+.route-feedback.success { border-color: #95de64; background: #f6ffed; color: #237804; }
 .collection-list { display: grid; gap: 7px; }
 .collection-row { display: flex; min-height: 44px; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid #e4e7ed; border-radius: 4px; background: #fff; }
 .collection-row:hover { border-color: #c6e2ff; }
-.collection-row.duplicate-route { border-color: #ff4d4f; background: #fff2f0; }
+.collection-row.duplicate-route { border-color: #ff4d4f; background: #fff1f0; box-shadow: 0 0 0 2px rgba(255, 77, 79, .12); }
+.collection-row.recent-route { border-color: #73d13d; background: #f6ffed; box-shadow: 0 0 0 2px rgba(82, 196, 26, .1); }
 .collection-row input { flex: 1; }
 .collection-row code { flex: 1; overflow: hidden; color: #303133; font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.route-state { flex: none; padding: 3px 7px; border-radius: 4px; font-size: 12px; font-weight: 700; line-height: 1.3; white-space: nowrap; }
+.route-state.error { background: #ffccc7; color: #a8071a; }
+.route-state.success { background: #d9f7be; color: #237804; }
 .row-index { display: grid; place-items: center; width: 28px; height: 28px; flex: 0 0 28px; border-radius: 4px; background: #e6f4ff; color: #1677ff; font-weight: 700; }
+.collection-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; padding-top: 12px; border-top: 1px solid #e4e9f0; color: #52647c; font-size: 13px; }
+.collection-pagination > div { display: flex; gap: 8px; }
 .editor-error { display: inline-block; margin-top: 16px; }
 .route-rule { display: block; margin: -4px 0 10px; color: #667085; line-height: 1.5; }
-.field-error { margin: -3px 0 10px; color: #cf1322; font-size: 12px; }
 .locked-route { color: #8c8c8c; font-size: 12px; }
 .save-hint { margin-right: auto; color: #909399; font-size: 12px; }
 .instance-list-card { padding: 0; overflow: hidden; }
@@ -430,5 +511,14 @@ const {dirty: formDirty, confirmClose: confirmFormClose} = useFormLeaveGuard(
 .inline-empty { padding: 19px; border: 1px dashed #d9d9d9; border-radius: 8px; color: #8c8c8c; text-align: center; background: #fafafa; font-size: 14px; }
 @media (max-width: 900px) {
   .collection-grid, .three-column, .component-collection-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 560px) {
+  .collection-add { grid-template-columns: 1fr 1fr; }
+  .collection-add input { grid-column: 1 / -1; }
+  .collection-toolbar { grid-template-columns: 1fr; }
+  .collection-toolbar > span { justify-self: start; }
+  .collection-row { align-items: flex-start; flex-wrap: wrap; }
+  .collection-row code { min-width: calc(100% - 44px); padding-top: 5px; white-space: normal; overflow-wrap: anywhere; }
+  .row-actions { width: 100%; justify-content: flex-end; }
 }
 </style>

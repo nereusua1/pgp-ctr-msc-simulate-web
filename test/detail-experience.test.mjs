@@ -52,11 +52,31 @@ test('消息组件使用云路由规则且不提供启用停用入口', () => {
   assert.doesNotMatch(component, /v-model="statusFilter"|v-model="form\.status"|>启用<|>停用</)
 })
 
+test('消息组件的大量 Group 和 Topic 可搜索分页并明确反馈新增与重复', () => {
+  assert.match(component, /const routePageSize = 8/)
+  assert.match(component, /function visibleRouteEntries\(key\)/)
+  assert.match(component, /aria-label="搜索 Producer Group"/)
+  assert.match(component, /aria-label="搜索 Topic"/)
+  assert.match(component, /routePages\[key\] = Math\.max\(1, Math\.ceil\(form\[key\]\.length \/ routePageSize\)\)/)
+  assert.match(component, /\$\{label\}“\$\{value\}”已存在，已在下方标出重复项。/)
+  assert.match(component, /class="route-feedback error" role="alert"/)
+  assert.match(component, /class="route-feedback success" role="status"/)
+  assert.match(component, /class="route-state error">已存在/)
+  assert.match(component, /class="route-state success">刚刚添加/)
+  assert.match(component, /\.collection-row\.duplicate-route \{[^}]*box-shadow:/s)
+  assert.match(component, /\.collection-row\.recent-route \{[^}]*box-shadow:/s)
+})
+
 test('报文列表提供可由地址恢复的数据源独立筛选', () => {
   assert.match(message, /useListQueryValue\('messages', 'source', 'ALL'\)/)
   assert.match(message, />全部数据源<\/option>/)
   assert.match(message, />未关联数据源<\/option>/)
   assert.match(message, /dataSourceFilter\.value === 'UNASSOCIATED'/)
+})
+
+test('默认投递目标仅通过实例卡片勾选且不显示重复添加入口', () => {
+  assert.match(message, /@change="toggleTargetComponent\(item, \$event\.target\.checked\)"/)
+  assert.doesNotMatch(message, /addTargetForComponent|>添加目标<\/button>/)
 })
 
 test('会话到期提示使用后端超时且业务请求刷新计时', () => {

@@ -63,6 +63,17 @@ function periodIntervalMinutes(template) {
   return values.length ? Math.min(...values) : 0
 }
 
+function realtimeCurrentTime(template, plannedAt) {
+  if (template.businessType !== 'REALTIME') return plannedAt
+  const interval = periodIntervalMinutes(template)
+  if (!interval) return plannedAt
+  const aligned = new Date(plannedAt)
+  const minuteOfDay = aligned.getHours() * 60 + aligned.getMinutes()
+  const alignedMinute = Math.floor(minuteOfDay / interval) * interval
+  aligned.setHours(0, alignedMinute, 0, 0)
+  return aligned
+}
+
 function parseFileTime(value, pattern) {
   const parts = {yyyy: 1970, MM: 1, dd: 1, HH: 0, mm: 0, ss: 0}
   let cursor = 0
@@ -155,7 +166,8 @@ export function preGenerateMessage(template, plannedValue, now = new Date(), uui
   }
   // 预生成与真实执行保持同一标识格式，便于在投递前直接核对正文 Message ID。
   const messageId = uuidFactory()
-  const endAt = new Date(plannedAt.getTime() + periodHours(template) * 3600000)
+  const currentAt = realtimeCurrentTime(template, plannedAt)
+  const endAt = new Date(currentAt.getTime() + periodHours(template) * 3600000)
   const warnings = []
   const replacedPaths = []
   let replacementCount = 0
@@ -164,7 +176,7 @@ export function preGenerateMessage(template, plannedValue, now = new Date(), uui
     const format = binding.format || 'yyyy-MM-dd HH:mm:ss'
     const provider = binding.provider || binding.strategy
     if (provider === 'MESSAGE_ID') value = messageId
-    else if (provider === 'TASK_TRIGGER_TIME' || provider === 'PLANNED_TRIGGER_TIME' || provider === 'BUSINESS_BASE_TIME' || provider === 'DATA_INTERVAL_SEQUENCE') value = formatTime(plannedAt, format)
+    else if (provider === 'TASK_TRIGGER_TIME' || provider === 'PLANNED_TRIGGER_TIME' || provider === 'BUSINESS_BASE_TIME' || provider === 'DATA_INTERVAL_SEQUENCE') value = formatTime(currentAt, format)
     else if (provider === 'PERIOD_END_TIME') value = formatTime(endAt, format)
     else if (provider === 'CONSTANT') value = castValue(binding.value, binding.targetType)
     else continue
@@ -178,7 +190,7 @@ export function preGenerateMessage(template, plannedValue, now = new Date(), uui
   let targetFiles = []
   if (template.type === 'FILE' || template.type === 'UNSTRUCTURED_FILE') {
     const configuredName = template.fileGeneration?.sourceFileName || findFirstValue(content, 'fileName')
-    fileName = generatedFileName(configuredName, template.fileGeneration?.fileNameBindings, plannedAt, endAt, periodIntervalMinutes(template))
+    fileName = generatedFileName(configuredName, template.fileGeneration?.fileNameBindings, currentAt, endAt, periodIntervalMinutes(template))
     if (template.type === 'UNSTRUCTURED_FILE') {
       const generation = template.fileGeneration || {}
       const targetPath = joinTargetPath(generation.targetDirectory, fileName)
@@ -194,7 +206,7 @@ export function preGenerateMessage(template, plannedValue, now = new Date(), uui
   }
   return {
     content: JSON.stringify(content, null, 2), messageId, replacementCount, replacedPaths, warnings, fileName,
-    plannedAt: formatTime(plannedAt), businessBaseAt: formatTime(plannedAt), periodEndAt: formatTime(endAt),
+    plannedAt: formatTime(plannedAt), businessBaseAt: formatTime(currentAt), periodEndAt: formatTime(endAt),
     generatedAt: formatTime(now), type: template.type || 'JSON',
     sourceFileName: template.fileGeneration?.sourceFileName || '',
     targetFileName: fileName,

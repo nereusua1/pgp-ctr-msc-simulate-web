@@ -15,7 +15,7 @@ test('文件规则提供当前、起报、预报三个时间来源', () => {
   assert.equal(fileTimeCategory('CURRENT_HOUR'), 'CURRENT_TIME')
   assert.equal(fileTimeCategory('FORECAST_FIRST_TIME'), 'FORECAST_TIME')
   assert.deepEqual(fileTimeOptions('ISSUE_TIME').map(option => option[0]), ['BUSINESS_BASE_TIME', 'BUSINESS_DAY_START'])
-  assert.match(fileTimeSourceDescription('CURRENT_TIME'), /任务时间/)
+  assert.match(fileTimeSourceDescription('CURRENT_TIME'), /任务时间.*period_interval.*最近间隔点.*为空/)
   assert.match(fileTimeSourceDescription('FORECAST_TIME'), /第一个预报时间/)
 })
 

@@ -21,7 +21,7 @@ export function fileTimeOptions(category) {
 }
 
 export const FILE_TIME_SOURCE_DESCRIPTIONS = {
-  CURRENT_TIME: '以本次任务时间为基准，可取原时刻、所在日期零点或所在整点。',
+  CURRENT_TIME: '以本次任务时间为基准；用于实况时，period_interval 有值则向下对齐到最近间隔点，为空则保留任务时间。',
   ISSUE_TIME: '以业务起报时间为基准，可取起报时刻或起报日期零点。',
   FORECAST_TIME: '仅适用于预报业务，可按数据间隔生成、取第一个预报时间或预报结束时间。'
 }
