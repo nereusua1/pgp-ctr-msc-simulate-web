@@ -23,13 +23,13 @@ export function matchesFileRuleTemplate(template = {}, binding = {}) {
     && JSON.stringify(elementCodesOf(template.binding)) === JSON.stringify(elementCodesOf(binding))
 }
 
-/** 返回三要素完全匹配的已发布模板；后端保证正常情况下最多一个。 */
+/** 返回三要素完全匹配的已发布模板；不同文件可以拥有相同的三要素。 */
 export function matchingFileRuleTemplates(templates = [], binding = {}) {
   if (!binding.sourceCode || !binding.dataItemCode || !elementCodesOf(binding).length) return []
   return templates.filter(template => matchesFileRuleTemplate(template, binding))
 }
 
-/** 返回同一数据源和数据项下的已发布候选模板，供要素集合尚未选完整时直接采用。 */
+/** 返回同一数据源和数据项下的已发布候选模板，供配置人员按文件明确选择。 */
 export function candidateFileRuleTemplates(templates = [], binding = {}) {
   if (!binding.sourceCode || !binding.dataItemCode) return []
   return templates.filter(template => template.status === 'PUBLISHED' && template.binding

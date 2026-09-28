@@ -94,7 +94,7 @@ test('抽屉锁定键盘焦点并在关闭后恢复触发位置', () => {
 })
 
 test('报文按三要素自动带出文件规则且文件时间使用两级来源选择', () => {
-  assert.match(message, /按数据源、数据项和完整要素集合自动匹配/)
+  assert.match(message, /同一数据项可对应多份文件；每份报文明确选用一份已发布模板/)
   assert.match(message, /autoApplyMatchedFileRuleTemplate/)
   assert.doesNotMatch(message, /FILE_RULE_PRESETS|selectedFilePresetId|应用所选规则/)
   assert.doesNotMatch(message, /time-source-reference/)

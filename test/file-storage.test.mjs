@@ -42,5 +42,5 @@ test('模板升级必须由配置人员确认且候选模板可以带入完整�
   assert.match(messageView, /templateUpgradeAvailable/)
   assert.match(messageView, /window\.confirm\(`文件规则模板/)
   assert.match(messageView, /chooseCandidateFileRuleTemplate/)
-  assert.match(messageView, /使用此模板/)
+  assert.match(messageView, /选用此文件/)
 })

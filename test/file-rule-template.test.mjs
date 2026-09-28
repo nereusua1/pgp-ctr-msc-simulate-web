@@ -23,6 +23,16 @@ test('文件规则模板按数据源、数据项和无序要素集合精确匹�
   assert.equal(matchingFileRuleTemplates(templates, {...binding, elements:[{code:'A'}]}).length, 0)
 })
 
+test('同一三要素下的不同文件均保留为候选，供报文明示选择', () => {
+  const binding = {sourceCode:'2002002', dataItemCode:'SURF_HOUR', elements:[{code:'T'}]}
+  const templates = [
+    {id:'national', status:'PUBLISHED', binding:{sourceCode:'2002002', dataItemCode:'SURF_HOUR', elementCodes:['T']}, rule:{sourceFileName:'SURF_NATIONAL_HOUR_2025061010.txt'}},
+    {id:'city', status:'PUBLISHED', binding:{sourceCode:'2002002', dataItemCode:'SURF_HOUR', elementCodes:['T']}, rule:{sourceFileName:'SURF_CITY_HOUR_2025061010.txt'}}
+  ]
+  assert.deepEqual(matchingFileRuleTemplates(templates, binding).map(item => item.id), ['national', 'city'])
+  assert.deepEqual(candidateFileRuleTemplates(templates, binding).map(item => item.id), ['national', 'city'])
+})
+
 test('要素未选完整时返回同一数据源和数据项下的候选模板', () => {
   const templates = [
     {id:'t1', status:'PUBLISHED', binding:{sourceCode:'S1', dataItemCode:'D1', elementCodes:['A', 'B']}},

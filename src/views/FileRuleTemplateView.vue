@@ -80,7 +80,7 @@ const filteredTemplates = computed(() => {
   const query = keyword.value.trim().toLowerCase()
   return orderedTemplates.value.filter(template => {
     const binding = template.binding || {}
-    const searchable = [template.name, template.description, binding.sourceCode, binding.sourceName, binding.dataItemCode, binding.dataItemName].join(' ').toLowerCase()
+    const searchable = [template.name, template.description, template.rule?.sourceFileName, binding.sourceCode, binding.sourceName, binding.dataItemCode, binding.dataItemName].join(' ').toLowerCase()
     return (statusFilter.value === 'ALL' || template.status === statusFilter.value) && (!query || searchable.includes(query))
   })
 })
@@ -421,16 +421,16 @@ function confirmDelete() {
 <template>
   <main class="page file-rule-page">
     <template v-if="!routeId">
-      <div class="page-heading"><div><h1>文件规则模板</h1><p>集中维护可复用的文件解析与时间替换规则，报文按三要素自动匹配已发布模板。</p></div><button v-if="canManage" class="button primary" @click="openCreate"><AppIcon name="plus" :size="16"/>新建文件规则模板</button></div>
+      <div class="page-heading"><div><h1>文件规则模板</h1><p>每份模板描述一类文件；同一数据项和要素集合可配置多份文件模板。</p></div><button v-if="canManage" class="button primary" @click="openCreate"><AppIcon name="plus" :size="16"/>新建文件规则模板</button></div>
       <section class="card file-rule-list-card">
         <ListFilters>
-          <label><span>搜索模板</span><SearchInput v-model="keyword" aria-label="搜索文件规则模板" placeholder="名称、说明、数据源或数据项"/></label>
+          <label><span>搜索模板</span><SearchInput v-model="keyword" aria-label="搜索文件规则模板" placeholder="名称、文件名、数据源或数据项"/></label>
           <label>状态<select v-model="statusFilter"><option value="ALL">全部</option><option value="DRAFT">草稿</option><option value="PUBLISHED">已发布</option><option value="DISABLED">已停用</option></select></label>
           <button v-if="keyword || statusFilter !== 'ALL'" class="link-button" @click="keyword = ''; statusFilter = 'ALL'">清除筛选</button>
         </ListFilters>
         <div class="table-scroll"><table class="data-table management-table file-rule-table"><thead><tr><th>模板名称</th><th>数据源 / 数据项</th><th class="responsive-low">要素</th><th class="responsive-low">解析方式</th><th>状态</th><th class="responsive-low">更新时间</th><th class="operation-cell">操作</th></tr></thead><tbody>
           <tr v-for="template in visibleTemplates" :key="template.id">
-            <td><button class="management-primary" @click="openDetail(template)">{{ template.name }}</button><small>{{ template.description || '暂无适用说明' }}</small></td>
+            <td><button class="management-primary" @click="openDetail(template)">{{ template.name }}</button><small :title="template.rule?.sourceFileName || ''">{{ template.rule?.sourceFileName || template.description || '未配置样例文件名' }}</small></td>
             <td class="management-body"><b>{{ template.binding?.sourceName || template.binding?.sourceCode || '未绑定数据源' }}</b><small>{{ template.binding?.dataItemName || template.binding?.dataItemCode || '未绑定数据项' }}</small></td>
             <td class="management-body responsive-low"><span class="count-value">{{ template.binding?.elementCodes?.length || template.binding?.elements?.length || 0 }}</span> 项</td>
             <td class="management-body responsive-low">{{ parserModeLabel(template.rule?.parserMode) }}</td>

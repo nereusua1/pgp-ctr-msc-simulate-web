@@ -94,7 +94,7 @@ let elementTimer
 const selected = computed(() => props.templates.find(item => item.id === selectedId.value))
 const matchedFileRuleTemplates = computed(() => matchingFileRuleTemplates(props.fileRuleTemplates, form.dataBinding || {}))
 const candidateTemplates = computed(() => candidateFileRuleTemplates(props.fileRuleTemplates, form.dataBinding || {}))
-const matchedTemplate = computed(() => matchedFileRuleTemplates.value[0])
+const matchedTemplate = computed(() => matchedFileRuleTemplates.value.find(item => item.id === form.fileGeneration?.ruleTemplateId))
 const templateUpgradeAvailable = computed(() => Boolean(matchedTemplate.value
   && form.fileGeneration?.ruleTemplateId === matchedTemplate.value.id
   && Number(matchedTemplate.value.version || 1) > Number(form.fileGeneration?.ruleTemplateVersion || 0)))
@@ -132,6 +132,9 @@ const deliveryTargetsOf = template => {
   })
 }
 const targetTopicsOf = template => [...new Set(deliveryTargetsOf(template).map(item => item.topic).filter(Boolean))]
+const fileNameOf = item => item.fileGeneration?.sourceFileName
+  || String(item.fileGeneration?.sourceFilePath || '').split('/').pop()
+  || '未配置原始文件名'
 const messageSourceOptions = computed(() => {
   const options = new Map()
   for (const source of props.sources || []) {
@@ -148,11 +151,29 @@ const filteredTemplates = computed(() => {
   const search = keyword.value.trim().toLowerCase()
   return props.templates.filter(item => (statusFilter.value === 'ALL' || item.status === statusFilter.value)
     && (dataSourceFilter.value === 'ALL' || (dataSourceFilter.value === 'UNASSOCIATED' ? !item.dataBinding?.sourceCode : item.dataBinding?.sourceCode === dataSourceFilter.value))
-    && (!search || [item.name, item.type, item.description, dataItemName(item), dataSourceName(item), ...targetTopicsOf(item)]
+    && (!search || [item.name, item.type, item.description, fileNameOf(item), dataItemName(item), dataSourceName(item), ...targetTopicsOf(item)]
     .some(value => String(value || '').toLowerCase().includes(search))))
 })
 const totalPages = computed(() => Math.max(1, Math.ceil(filteredTemplates.value.length / pageSize.value)))
 const visibleTemplates = computed(() => filteredTemplates.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
+const taskScheduleOf = task => task.scheduleType === 'CRON' ? `Cron ${task.scheduleYear && task.scheduleYear !== '*' ? `${task.scheduleYear} 年 · ` : ''}${task.schedule || '未配置'}`
+  : task.scheduleType === 'FIXED_RATE' ? `每 ${task.schedule || '未配置'} 秒` : '手工执行'
+const topicFileGroups = computed(() => {
+  const topics = new Map()
+  for (const message of filteredTemplates.value) {
+    if (!isStructuredFile(message) && !isUnstructuredFile(message)) continue
+    for (const topic of targetTopicsOf(message)) {
+      if (!topics.has(topic)) topics.set(topic, new Map())
+      const items = topics.get(topic)
+      const binding = message.dataBinding || {}
+      const key = `${binding.sourceCode || ''}\u0000${binding.dataItemCode || ''}`
+      if (!items.has(key)) items.set(key, {key, label: `${binding.dataItemName || binding.dataItemCode || '未关联数据项'}（${binding.sourceCode || '未关联数据源'}）`, messages: []})
+      items.get(key).messages.push(message)
+    }
+  }
+  return [...topics].map(([topic, items]) => ({topic, items: [...items.values()], count: [...items.values()].reduce((sum, item) => sum + item.messages.length, 0)}))
+    .filter(group => group.count > 1).sort((left, right) => left.topic.localeCompare(right.topic))
+})
 const referenceTasks = computed(() => tasksReferencingMessage(props.tasks, selected.value?.id))
 const selectedTargetIds = computed(() => (form.deliveryTargets || []).map(item => item.componentId))
 const activeDeliveryTarget = computed(() => (form.deliveryTargets || []).find(item => item.targetId === activeTargetComponentId.value))
@@ -875,7 +896,7 @@ function clearFileRuleTemplateReference() {
   delete form.fileGeneration.ruleTemplateName
 }
 
-/** 三要素唯一命中已发布模板时自动复制稳定规则快照。 */
+/** 仅三要素唯一命中时自动复制稳定规则快照；多文件必须由配置人员选定。 */
 function autoApplyMatchedFileRuleTemplate() {
   if (form.type !== 'FILE' || isOriginalMessage(form) || matchedFileRuleTemplates.value.length !== 1) return
   const template = matchedFileRuleTemplates.value[0]
@@ -886,8 +907,9 @@ function autoApplyMatchedFileRuleTemplate() {
   emit('notify', `已根据数据源、数据项和要素项自动应用“${template.name}”`)
 }
 
-/** 使用候选模板的完整要素集合，并立即建立唯一模板快照。 */
+/** 使用选中的文件模板及其要素集合，明确锁定该文件的规则快照。 */
 function chooseCandidateFileRuleTemplate(template) {
+  if (form.fileGeneration?.ruleTemplateId === template.id) return
   const templateElements = Array.isArray(template.binding?.elements) ? template.binding.elements : []
   const byCode = new Map([...elementOptions.value, ...templateElements].map(item => [String(item.code || item), item]))
   form.dataBinding.elements = elementCodesOf(template.binding).map(code => {
@@ -895,7 +917,13 @@ function chooseCandidateFileRuleTemplate(template) {
     return typeof item === 'object' ? {...item} : {id: code, code, name: ''}
   })
   clearFileRuleTemplateReference()
-  nextTick(autoApplyMatchedFileRuleTemplate)
+  form.fileGeneration = normalizeFileGeneration(applyFileRuleTemplate({
+    ...form.fileGeneration,
+    sourceFileName: template.rule?.sourceFileName || '',
+    sourceFilePath: ''
+  }, template))
+  fileInspection.value = null
+  emit('notify', `已选用“${template.name}”，请填写这份文件的源地址并检查原始文件名`)
 }
 
 /** 配置人员确认后才把模板新版本复制到当前报文草稿。 */
@@ -981,11 +1009,24 @@ function confirmDelete() {
     <div v-show="!routeId" class="page-heading"><div><h1>报文模板</h1><p>每行展示一份报文，点击名称查看完整配置。</p></div><button v-if="canManage" class="button primary" @click="openCreate"><AppIcon name="plus" :size="16" />新建报文</button></div>
     <section v-show="!routeId" class="card message-list-card">
       <ListFilters>
-        <label><span>搜索报文</span><SearchInput v-model="keyword" aria-label="搜索报文" placeholder="名称、数据源名称或 Topic" /></label>
+        <label><span>搜索报文</span><SearchInput v-model="keyword" aria-label="搜索报文" placeholder="名称、文件名、数据源或 Topic" /></label>
         <label>数据源<select v-model="dataSourceFilter"><option value="ALL">全部数据源</option><option value="UNASSOCIATED">未关联数据源</option><option v-for="source in messageSourceOptions" :key="source[0]" :value="source[0]">{{ source[1] }}（{{ source[0] }}）</option></select></label>
         <label>状态<select v-model="statusFilter"><option value="ALL">全部</option><option value="DRAFT">草稿</option><option value="PUBLISHED">已发布</option></select></label>
         <button v-if="keyword || statusFilter !== 'ALL' || dataSourceFilter !== 'ALL'" class="link-button" @click="keyword = ''; statusFilter = 'ALL'; dataSourceFilter = 'ALL'">清除筛选</button>
       </ListFilters>
+      <section v-if="topicFileGroups.length" class="topic-file-groups" aria-label="同一 Topic 下的文件报文">
+        <div class="topic-file-heading"><b>按 Topic 查看文件报文</b><span>同一 Topic 可关联多份文件，各文件由自己的任务决定执行时间。</span></div>
+        <details v-for="group in topicFileGroups" :key="group.topic" class="topic-file-group" :open="topicFileGroups.length === 1">
+          <summary><code>{{ group.topic }}</code><span>{{ group.count }} 份文件报文</span></summary>
+          <div v-for="item in group.items" :key="item.key" class="topic-file-item">
+            <h3>{{ item.label }}</h3>
+            <div v-for="message in item.messages" :key="message.id" class="topic-file-row">
+              <div><button class="management-primary" type="button" @click="openFor(message, 'detail')">{{ message.name }}</button><small :title="fileNameOf(message)">{{ fileNameOf(message) }}</small></div>
+              <div class="topic-file-schedules"><span v-for="task in tasksReferencingMessage(props.tasks, message.id)" :key="task.id" :title="task.name">{{ task.name }} · {{ taskScheduleOf(task) }}{{ task.status === 'ENABLED' ? '' : '（未启用）' }}</span><span v-if="!tasksReferencingMessage(props.tasks, message.id).length">未关联任务</span></div>
+            </div>
+          </div>
+        </details>
+      </section>
       <div class="table-scroll"><table class="data-table management-table message-table"><thead><tr><th>报文名称</th><th class="responsive-low">数据源名称</th><th class="responsive-low">关联数据项</th><th>关联 Topic</th><th>状态</th><th class="operation-cell">操作</th></tr></thead><tbody>
         <tr v-for="item in visibleTemplates" :key="item.id">
           <td><button class="management-primary message-name" @click="openFor(item, 'detail')">{{ item.name }}</button><small>{{ item.description || '暂无业务描述' }}</small></td>
@@ -1060,10 +1101,10 @@ function confirmDelete() {
       <section v-else-if="activeTab === 'file'" id="config-panel-file" class="config-panel file-template-panel" role="tabpanel">
         <div class="card-heading"><div><h2>{{ isUnstructuredFile(form) ? '非结构化文件复制' : '结构化文件生成规则' }}</h2><p>{{ isUnstructuredFile(form) ? '配置源文件、目标位置和外层报文引用；不解析文件正文。' : '按文件规则模板解析内容并替换已配置的时间字段。' }}</p></div><button v-if="isStructuredFile(form)" class="button secondary" :disabled="fileInspecting || ['PASSTHROUGH', 'POSITIONAL_TEXT', 'FIXED_WIDTH'].includes(form.fileGeneration.parserMode)" @click="inspectSourceFile">{{ fileInspecting ? '正在识别…' : '识别文件结构' }}</button></div>
         <section v-if="isStructuredFile(form)" class="file-rule-section preset-section">
-          <div><span class="section-index">01</span><div><h3>文件规则模板</h3><p>按数据源、数据项和完整要素集合自动匹配唯一的已发布模板。</p></div></div>
-          <div v-if="hasMatchedFileRuleTemplate()" class="matched-file-template"><span>已应用</span><div><b>{{ form.fileGeneration.ruleTemplateName || matchedTemplate?.name || form.fileGeneration.ruleTemplateId }}</b><small v-if="templateUpgradeAvailable">模板已有新版本，当前报文仍使用已锁定快照。</small></div><button v-if="templateUpgradeAvailable" class="button secondary small" type="button" @click="upgradeFileRuleTemplate">可升级</button></div>
-          <div v-else-if="candidateTemplates.length" class="file-template-candidates"><p>请选择适用模板，系统会同时带入该模板的完整要素集合：</p><button v-for="template in candidateTemplates" :key="template.id" type="button" @click="chooseCandidateFileRuleTemplate(template)"><b>{{ template.name }}</b><small>{{ elementCodesOf(template.binding).join('、') }}</small><span>使用此模板</span></button></div>
-          <div v-else class="file-rule-empty">当前数据源和数据项下没有可用的已发布文件规则模板。请先完成模板配置并发布。</div>
+          <div><span class="section-index">01</span><div><h3>文件规则模板</h3><p>同一数据项可对应多份文件；每份报文明确选用一份已发布模板。</p></div></div>
+          <div v-if="hasMatchedFileRuleTemplate()" class="matched-file-template"><span>已应用</span><div><b>{{ form.fileGeneration.ruleTemplateName || matchedTemplate?.name || form.fileGeneration.ruleTemplateId }}</b><small>{{ matchedTemplate?.rule?.sourceFileName || '请检查原始文件名' }}<template v-if="templateUpgradeAvailable"> · 模板已有新版本，当前报文仍使用已锁定快照。</template></small></div><button v-if="templateUpgradeAvailable" class="button secondary small" type="button" @click="upgradeFileRuleTemplate">可升级</button></div>
+          <div v-if="candidateTemplates.length && (!hasMatchedFileRuleTemplate() || candidateTemplates.length > 1)" class="file-template-candidates"><p>{{ hasMatchedFileRuleTemplate() ? '其他可选文件模板：' : '请选择对应文件模板，系统会带入其完整要素集合：' }}</p><button v-for="template in candidateTemplates" :key="template.id" type="button" :class="{ selected: form.fileGeneration?.ruleTemplateId === template.id }" :disabled="form.fileGeneration?.ruleTemplateId === template.id" @click="chooseCandidateFileRuleTemplate(template)"><b>{{ template.name }}</b><small>{{ template.rule?.sourceFileName || '未配置样例文件名' }} · {{ elementCodesOf(template.binding).join('、') }}</small><span>{{ form.fileGeneration?.ruleTemplateId === template.id ? '当前使用' : '选用此文件' }}</span></button></div>
+          <div v-else-if="!hasMatchedFileRuleTemplate()" class="file-rule-empty">当前数据源和数据项下没有可用的已发布文件规则模板。请先完成模板配置并发布。</div>
         </section>
         <section class="file-rule-section">
           <div><span class="section-index">{{ isUnstructuredFile(form) ? '01' : '02' }}</span><div><h3>源文件与目标位置</h3><p>{{ isUnstructuredFile(form) ? '源文件内容保持不变，目标文件名按业务时间生成。' : '编码、分隔符和解析方式来自已应用的规则模板。' }}</p></div></div>
@@ -1368,4 +1409,17 @@ body .page .message-detail .detail-format { color: #5c6d84; font: 500 14px/1.55 
 @media (max-width: 1100px) { .editor-step-header .tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }.data-linkage-grid { grid-template-columns: 1fr; }.linkage-step > p { min-height: 0; }.file-generation-flow { align-items: stretch; flex-direction: column; }.file-generation-flow b { display: none; }.binding-toolbar { grid-template-columns: minmax(220px, 1fr) auto; }.mapping-row, .system-mapping-list .mapping-row { grid-template-columns: 26px minmax(220px, 1fr) 18px minmax(240px, 340px); }.system-mapping-list .mapping-kind { display: none; }.system-mapping-list .mapping-edit { grid-column: 4; }.system-binding-heading { align-items: flex-start; } }
 @media (max-width: 900px) { .list-toolbar, .filters { align-items: stretch; flex-direction: column; }.filters label { width: 100%; }.time-mapping-list { grid-template-columns: 1fr; }.binding-overview { grid-template-columns: 1fr; }.binding-overview > div { border-right: 0; border-bottom: 1px solid #e7ecf3; }.linked-elements-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }.pre-generate-layout { grid-template-columns: 1fr; }.pre-generate-facts { grid-template-columns: 1fr; }.mapping-row, .system-mapping-list .mapping-row, .time-mapping-list .mapping-row { grid-template-columns: 24px minmax(0, 1fr); }.mapping-arrow { display: none; }.mapping-rule, .mapping-edit, .system-mapping-list .mapping-edit { grid-column: 2; }.time-mapping-list .mapping-rule { margin-top: 5px; }.time-rule-context { grid-template-columns: 1fr; }.time-rule-context i { display: none; }.system-toolbar { align-items: stretch; flex-direction: column; }.system-toolbar .search-input { width: 100%; }.binding-help strong:not(:first-child) { margin-left: 0; } }
 @media (max-width: 680px) { .editor-step-header .tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }.config-step-navigation { align-items: flex-start; flex-direction: column; }.binding-toolbar { grid-template-columns: 1fr; }.binding-filter { width: 100%; }.binding-filter button { flex: 1; }.binding-page-heading { align-items: stretch; flex-direction: column; }.binding-section-tabs { gap: 16px; }.matched-file-template { grid-template-columns: 1fr; }.matched-file-template strong { justify-self: start; }.file-time-source-field.wide-field{grid-column:auto}.file-time-source-control{grid-template-columns:1fr}.file-time-source-control span{display:none} }
+.file-template-candidates > button.selected { border-color: #91caff; background: var(--blue-soft); }
+.file-template-candidates > button:disabled { cursor: default; }
+.topic-file-groups { display: grid; gap: 8px; padding: 0 18px 16px; }
+.topic-file-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px 12px; color: var(--ink); }
+.topic-file-heading b { font-size: 15px; }.topic-file-heading span { color: var(--muted); font-size: 13px; }
+.topic-file-group { overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; }
+.topic-file-group summary { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; padding: 11px 14px; background: #f7f9fc; color: var(--ink); cursor: pointer; font-weight: 650; }
+.topic-file-group summary:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+.topic-file-group summary code { overflow-wrap: anywhere; color: var(--management-link); font-size: 14px; }.topic-file-group summary span { color: var(--muted); font-size: 13px; }
+.topic-file-item { padding: 10px 14px; border-top: 1px solid var(--line); }.topic-file-item h3 { margin: 0 0 8px; color: #526078; font-size: 13px; font-weight: 650; }
+.topic-file-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px 18px; padding: 8px 0; }.topic-file-row + .topic-file-row { border-top: 1px solid #edf0f4; }
+.topic-file-row > div { min-width: 0; }.topic-file-row small { display: block; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }.topic-file-schedules { display: grid; align-content: center; gap: 3px; color: #526078; font-size: 13px; }
+@media (max-width: 680px) { .topic-file-row { grid-template-columns: 1fr; } }
 </style>

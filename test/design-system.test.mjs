@@ -158,8 +158,8 @@ test('报文列表展示数据源名称并保留综合搜索', () => {
   assert.match(messageView, /<TruncatedText :text="dataSourceName\(item\)"/)
   assert.match(messageView, /<span>搜索报文<\/span>/)
   assert.match(messageView, /aria-label="搜索报文"/)
-  assert.match(messageView, /placeholder="名称、数据源名称或 Topic"/)
-  assert.match(messageView, /\[item\.name, item\.type, item\.description, dataItemName\(item\), dataSourceName\(item\), \.\.\.targetTopicsOf\(item\)\]/)
+  assert.match(messageView, /placeholder="名称、文件名、数据源或 Topic"/)
+  assert.match(messageView, /\[item\.name, item\.type, item\.description, fileNameOf\(item\), dataItemName\(item\), dataSourceName\(item\), \.\.\.targetTopicsOf\(item\)\]/)
   assert.doesNotMatch(messageView, /<th>类型<\/th>/)
 })
 
