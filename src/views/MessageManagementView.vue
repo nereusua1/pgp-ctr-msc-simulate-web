@@ -151,29 +151,17 @@ const filteredTemplates = computed(() => {
   const search = keyword.value.trim().toLowerCase()
   return props.templates.filter(item => (statusFilter.value === 'ALL' || item.status === statusFilter.value)
     && (dataSourceFilter.value === 'ALL' || (dataSourceFilter.value === 'UNASSOCIATED' ? !item.dataBinding?.sourceCode : item.dataBinding?.sourceCode === dataSourceFilter.value))
-    && (!search || [item.name, item.type, item.description, fileNameOf(item), dataItemName(item), dataSourceName(item), ...targetTopicsOf(item)]
+    && (!search || [item.name, item.type, item.description, fileNameOf(item), dataItemName(item), dataSourceName(item)]
     .some(value => String(value || '').toLowerCase().includes(search))))
 })
 const totalPages = computed(() => Math.max(1, Math.ceil(filteredTemplates.value.length / pageSize.value)))
 const visibleTemplates = computed(() => filteredTemplates.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
-const taskScheduleOf = task => task.scheduleType === 'CRON' ? `Cron ${task.scheduleYear && task.scheduleYear !== '*' ? `${task.scheduleYear} 年 · ` : ''}${task.schedule || '未配置'}`
-  : task.scheduleType === 'FIXED_RATE' ? `每 ${task.schedule || '未配置'} 秒` : '手工执行'
-const topicFileGroups = computed(() => {
-  const topics = new Map()
-  for (const message of filteredTemplates.value) {
-    if (!isStructuredFile(message) && !isUnstructuredFile(message)) continue
-    for (const topic of targetTopicsOf(message)) {
-      if (!topics.has(topic)) topics.set(topic, new Map())
-      const items = topics.get(topic)
-      const binding = message.dataBinding || {}
-      const key = `${binding.sourceCode || ''}\u0000${binding.dataItemCode || ''}`
-      if (!items.has(key)) items.set(key, {key, label: `${binding.dataItemName || binding.dataItemCode || '未关联数据项'}（${binding.sourceCode || '未关联数据源'}）`, messages: []})
-      items.get(key).messages.push(message)
-    }
-  }
-  return [...topics].map(([topic, items]) => ({topic, items: [...items.values()], count: [...items.values()].reduce((sum, item) => sum + item.messages.length, 0)}))
-    .filter(group => group.count > 1).sort((left, right) => left.topic.localeCompare(right.topic))
-})
+const taskSummaryOf = template => {
+  const tasks = tasksReferencingMessage(props.tasks, template.id)
+  return tasks.length ? `关联 ${tasks.length} 个任务` : '未关联任务'
+}
+const rowSubtitleOf = template => ((isStructuredFile(template) && !isOriginalMessage(template)) || isUnstructuredFile(template))
+  ? fileNameOf(template) : (template.description || '暂无业务描述')
 const referenceTasks = computed(() => tasksReferencingMessage(props.tasks, selected.value?.id))
 const selectedTargetIds = computed(() => (form.deliveryTargets || []).map(item => item.componentId))
 const activeDeliveryTarget = computed(() => (form.deliveryTargets || []).find(item => item.targetId === activeTargetComponentId.value))
@@ -321,6 +309,11 @@ function warnBeforeUnload(event) {
 }
 function handleGlobalCreate(event) { if (event.detail?.page === 'messages') openCreate() }
 onMounted(() => {
+  const query = new URLSearchParams(window.location.search)
+  if (query.has('messages.topic')) {
+    query.delete('messages.topic')
+    window.history.replaceState(window.history.state, '', `${window.location.pathname}${query.size ? `?${query}` : ''}${window.location.hash}`)
+  }
   window.addEventListener('beforeunload', warnBeforeUnload)
   window.addEventListener('global-create', handleGlobalCreate)
 })
@@ -1009,27 +1002,14 @@ function confirmDelete() {
     <div v-show="!routeId" class="page-heading"><div><h1>报文模板</h1><p>每行展示一份报文，点击名称查看完整配置。</p></div><button v-if="canManage" class="button primary" @click="openCreate"><AppIcon name="plus" :size="16" />新建报文</button></div>
     <section v-show="!routeId" class="card message-list-card">
       <ListFilters>
-        <label><span>搜索报文</span><SearchInput v-model="keyword" aria-label="搜索报文" placeholder="名称、文件名、数据源或 Topic" /></label>
-        <label>数据源<select v-model="dataSourceFilter"><option value="ALL">全部数据源</option><option value="UNASSOCIATED">未关联数据源</option><option v-for="source in messageSourceOptions" :key="source[0]" :value="source[0]">{{ source[1] }}（{{ source[0] }}）</option></select></label>
+        <label><span>搜索报文</span><SearchInput v-model="keyword" aria-label="搜索报文" placeholder="名称、文件名或数据源" /></label>
+        <label>数据源<select v-model="dataSourceFilter" @change="page = 1"><option value="ALL">全部数据源</option><option value="UNASSOCIATED">未关联数据源</option><option v-for="source in messageSourceOptions" :key="source[0]" :value="source[0]">{{ source[1] }}（{{ source[0] }}）</option></select></label>
         <label>状态<select v-model="statusFilter"><option value="ALL">全部</option><option value="DRAFT">草稿</option><option value="PUBLISHED">已发布</option></select></label>
         <button v-if="keyword || statusFilter !== 'ALL' || dataSourceFilter !== 'ALL'" class="link-button" @click="keyword = ''; statusFilter = 'ALL'; dataSourceFilter = 'ALL'">清除筛选</button>
       </ListFilters>
-      <section v-if="topicFileGroups.length" class="topic-file-groups" aria-label="同一 Topic 下的文件报文">
-        <div class="topic-file-heading"><b>按 Topic 查看文件报文</b><span>同一 Topic 可关联多份文件，各文件由自己的任务决定执行时间。</span></div>
-        <details v-for="group in topicFileGroups" :key="group.topic" class="topic-file-group" :open="topicFileGroups.length === 1">
-          <summary><code>{{ group.topic }}</code><span>{{ group.count }} 份文件报文</span></summary>
-          <div v-for="item in group.items" :key="item.key" class="topic-file-item">
-            <h3>{{ item.label }}</h3>
-            <div v-for="message in item.messages" :key="message.id" class="topic-file-row">
-              <div><button class="management-primary" type="button" @click="openFor(message, 'detail')">{{ message.name }}</button><small :title="fileNameOf(message)">{{ fileNameOf(message) }}</small></div>
-              <div class="topic-file-schedules"><span v-for="task in tasksReferencingMessage(props.tasks, message.id)" :key="task.id" :title="task.name">{{ task.name }} · {{ taskScheduleOf(task) }}{{ task.status === 'ENABLED' ? '' : '（未启用）' }}</span><span v-if="!tasksReferencingMessage(props.tasks, message.id).length">未关联任务</span></div>
-            </div>
-          </div>
-        </details>
-      </section>
       <div class="table-scroll"><table class="data-table management-table message-table"><thead><tr><th>报文名称</th><th class="responsive-low">数据源名称</th><th class="responsive-low">关联数据项</th><th>关联 Topic</th><th>状态</th><th class="operation-cell">操作</th></tr></thead><tbody>
         <tr v-for="item in visibleTemplates" :key="item.id">
-          <td><button class="management-primary message-name" @click="openFor(item, 'detail')">{{ item.name }}</button><small>{{ item.description || '暂无业务描述' }}</small></td>
+          <td><button class="management-primary message-name" @click="openFor(item, 'detail')">{{ item.name }}</button><small class="message-row-description"><TruncatedText :text="rowSubtitleOf(item)" prefer-below /></small><small v-if="isStructuredFile(item) || isUnstructuredFile(item)" class="message-row-task">{{ taskSummaryOf(item) }}</small></td>
           <td class="management-body responsive-low"><TruncatedText :text="dataSourceName(item)" /></td>
           <td class="management-body responsive-low"><TruncatedText :text="dataItemName(item)" /></td>
           <td class="management-body target-cell"><TruncatedText :text="targetTopicsOf(item).join('、') || '未关联'" code copyable /></td>
@@ -1258,12 +1238,27 @@ function confirmDelete() {
 .list-toolbar h2 { margin: 0; font-size: 17px; }.list-toolbar p { margin: 6px 0 0; color: #667085; }
 .filters { display: flex; align-items: flex-end; gap: 12px; }.filters label { display: block; color: #606266; font-size: 13px; font-weight: 600; }.filters label > span:first-child { display: block; margin-bottom: 7px; }
 .filters label { width: 300px; }
-.message-table { min-width: 960px; table-layout: fixed; }.message-table th:nth-child(1) { width: 170px; }.message-table th:nth-child(2) { width: 125px; }.message-table th:nth-child(3) { width: 140px; }.message-table th:nth-child(4) { width: 185px; }.message-table th:nth-child(5) { width: 80px; }.message-table th:nth-child(6) { width: 260px; }
+.message-table { min-width: 960px; table-layout: fixed; }.message-table th:nth-child(1) { width: 210px; }.message-table th:nth-child(2) { width: 125px; }.message-table th:nth-child(3) { width: 140px; }.message-table th:nth-child(4) { width: 185px; }.message-table th:nth-child(5) { width: 80px; }.message-table th:nth-child(6) { width: 260px; }
 .message-table td { overflow: hidden; color: #4f6178; font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }.message-table th:first-child, .message-table td:first-child { padding-left: 20px; }.message-table th:last-child, .message-table td:last-child { padding-right: 20px; }.message-name { max-width: 100%; overflow: hidden; color: var(--management-link); font-size: 16px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .target-cell { color: #4f6178 !important; font-family: inherit; font-size: 15px; font-weight: 450; }
 .message-table td.status-cell { overflow: visible; text-overflow: clip; }
 .message-table .operation-cell { text-align: center; }
 .message-table .operation-cell .row-actions { justify-content: center; gap: 10px; }
+.message-table .message-row-description,.message-table .message-row-task { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.message-table .message-row-task { margin-top: 3px; color: #667085; font-size: 12px; }
+@media (max-width: 680px) {
+  .message-table { min-width: 0; width: 100%; }
+  .message-table thead { display: none; }
+  .message-table tbody tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; padding: 16px; border-bottom: 1px solid var(--line); }
+  .message-table td { display: block; min-width: 0; width: auto; padding: 0 !important; border: 0; white-space: normal; }
+  .message-table td:first-child,.message-table td:last-child { grid-column: 1 / -1; }
+  .message-table td.responsive-low { display: none; }
+  .message-table td.target-cell::before { display: block; margin-bottom: 3px; color: var(--muted); content: 'Topic'; font-size: 12px; }
+  .message-table td.status-cell { align-self: center; }
+  .message-table td.operation-cell { position: static; padding-top: 8px !important; background: transparent; box-shadow: none; }
+  .message-table .operation-cell .row-actions { justify-content: flex-start; flex-wrap: wrap; }
+  .message-table .message-name { white-space: normal; text-align: left; }
+}
 .message-detail { color: #465973; }
 .editor-status-strip { display: flex; min-height: 46px; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 12px; padding: 9px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fafafa; }
 .editor-status-strip > div { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: var(--type-form-label); }
@@ -1411,15 +1406,4 @@ body .page .message-detail .detail-format { color: #5c6d84; font: 500 14px/1.55 
 @media (max-width: 680px) { .editor-step-header .tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }.config-step-navigation { align-items: flex-start; flex-direction: column; }.binding-toolbar { grid-template-columns: 1fr; }.binding-filter { width: 100%; }.binding-filter button { flex: 1; }.binding-page-heading { align-items: stretch; flex-direction: column; }.binding-section-tabs { gap: 16px; }.matched-file-template { grid-template-columns: 1fr; }.matched-file-template strong { justify-self: start; }.file-time-source-field.wide-field{grid-column:auto}.file-time-source-control{grid-template-columns:1fr}.file-time-source-control span{display:none} }
 .file-template-candidates > button.selected { border-color: #91caff; background: var(--blue-soft); }
 .file-template-candidates > button:disabled { cursor: default; }
-.topic-file-groups { display: grid; gap: 8px; padding: 0 18px 16px; }
-.topic-file-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px 12px; color: var(--ink); }
-.topic-file-heading b { font-size: 15px; }.topic-file-heading span { color: var(--muted); font-size: 13px; }
-.topic-file-group { overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; }
-.topic-file-group summary { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; padding: 11px 14px; background: #f7f9fc; color: var(--ink); cursor: pointer; font-weight: 650; }
-.topic-file-group summary:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
-.topic-file-group summary code { overflow-wrap: anywhere; color: var(--management-link); font-size: 14px; }.topic-file-group summary span { color: var(--muted); font-size: 13px; }
-.topic-file-item { padding: 10px 14px; border-top: 1px solid var(--line); }.topic-file-item h3 { margin: 0 0 8px; color: #526078; font-size: 13px; font-weight: 650; }
-.topic-file-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px 18px; padding: 8px 0; }.topic-file-row + .topic-file-row { border-top: 1px solid #edf0f4; }
-.topic-file-row > div { min-width: 0; }.topic-file-row small { display: block; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }.topic-file-schedules { display: grid; align-content: center; gap: 3px; color: #526078; font-size: 13px; }
-@media (max-width: 680px) { .topic-file-row { grid-template-columns: 1fr; } }
 </style>

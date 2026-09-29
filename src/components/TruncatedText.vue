@@ -1,7 +1,7 @@
 <script setup>
 import {computed, nextTick, onBeforeUnmount, ref, useId} from 'vue'
 
-const props = defineProps({text: {type: [String, Number], default: ''}, code: Boolean, copyable: Boolean})
+const props = defineProps({text: {type: [String, Number], default: ''}, code: Boolean, copyable: Boolean, preferBelow: Boolean})
 const trigger = ref(null)
 const tooltip = ref(null)
 const visible = ref(false)
@@ -30,7 +30,10 @@ function updatePosition() {
   const edge = 8
   const gap = 8
   const maxWidth = Math.max(160, Math.min(420, viewportWidth - edge * 2))
-  const useBelow = anchor.top < panel.height + gap + edge && viewportHeight - anchor.bottom > anchor.top
+  const availableBelow = viewportHeight - anchor.bottom
+  const useBelow = props.preferBelow
+    ? availableBelow >= panel.height + gap + edge || availableBelow > anchor.top
+    : anchor.top < panel.height + gap + edge && availableBelow > anchor.top
   const desiredTop = useBelow ? anchor.bottom + gap : anchor.top - panel.height - gap
   const top = Math.min(Math.max(edge, desiredTop), Math.max(edge, viewportHeight - panel.height - edge))
   const left = Math.min(Math.max(edge, anchor.left), Math.max(edge, viewportWidth - panel.width - edge))

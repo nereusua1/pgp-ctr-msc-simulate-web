@@ -153,13 +153,15 @@ test('所有管理列表统一字号层级并保留高亮蓝色主项', () => {
   assert.equal((dataItemView.match(/class="management-body"/g) || []).length, 2)
 })
 
-test('报文列表展示数据源名称并保留综合搜索', () => {
+test('报文列表保留名称文件名数据源搜索且不提供 Topic 查询', () => {
   assert.match(messageView, /<th class="responsive-low">数据源名称<\/th>/)
   assert.match(messageView, /<TruncatedText :text="dataSourceName\(item\)"/)
   assert.match(messageView, /<span>搜索报文<\/span>/)
   assert.match(messageView, /aria-label="搜索报文"/)
-  assert.match(messageView, /placeholder="名称、文件名、数据源或 Topic"/)
-  assert.match(messageView, /\[item\.name, item\.type, item\.description, fileNameOf\(item\), dataItemName\(item\), dataSourceName\(item\), \.\.\.targetTopicsOf\(item\)\]/)
+  assert.match(messageView, /placeholder="名称、文件名或数据源"/)
+  assert.match(messageView, /\[item\.name, item\.type, item\.description, fileNameOf\(item\), dataItemName\(item\), dataSourceName\(item\)\]/)
+  assert.doesNotMatch(messageView, /按 Topic 筛选报文/)
+  assert.match(messageView, /<th>关联 Topic<\/th>/)
   assert.doesNotMatch(messageView, /<th>类型<\/th>/)
 })
 
@@ -234,7 +236,8 @@ test('默认投递 Topic 支持模糊建议与手动输入', () => {
   assert.match(messageView, /aria-autocomplete="list"/)
   assert.match(messageView, /@keydown="handleTopicKeydown"/)
   assert.match(messageView, /没有匹配项，可直接使用当前输入/)
-  assert.doesNotMatch(messageView, /<label>Topic<select/)
+  assert.match(messageView, /<label class="topic-field">Topic<div class="topic-combobox">/)
+  assert.doesNotMatch(messageView, /<label class="topic-field">Topic<select/)
 })
 
 test('默认投递 Producer Group 同步支持模糊建议与手动输入', () => {
