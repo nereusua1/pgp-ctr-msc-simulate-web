@@ -21,6 +21,7 @@ import {
 
 const OverviewView = defineAsyncComponent(() => import('./views/OverviewView.vue'))
 const TaskManagementView = defineAsyncComponent(() => import('./views/TaskManagementView.vue'))
+const SqlDateTasksView = defineAsyncComponent(() => import('./views/SqlDateTasksView.vue'))
 const MessageManagementView = defineAsyncComponent(() => import('./views/MessageManagementView.vue'))
 const FileRuleTemplateView = defineAsyncComponent(() => import('./views/FileRuleTemplateView.vue'))
 const DataItemManagementView = defineAsyncComponent(() => import('./views/DataItemManagementView.vue'))
@@ -30,6 +31,7 @@ const ExecutionLogView = defineAsyncComponent(() => import('./views/ExecutionLog
 const navigation = [
   {key: 'overview', label: '运行总览', icon: 'overview'},
   {key: 'tasks', label: '任务管理', icon: 'tasks'},
+  {key: 'sql-date-tasks', label: '数据生成', icon: 'data'},
   {key: 'messages', label: '报文模板', icon: 'messages'},
   {key: 'file-rules', label: '文件规则模板', icon: 'messages'},
   {key: 'data-items', label: '数据项管理', icon: 'data'},
@@ -105,20 +107,21 @@ const componentHealthState = computed(() => {
 const authenticatedUsername = computed(() => getAuthenticatedUsername(currentUser.value))
 const authenticatedRole = computed(() => getAuthenticatedRole(currentUser.value))
 const canManage = computed(() => canManageConfiguration(currentUser.value))
-const visibleNavigation = computed(() => navigation.filter(item => canManage.value || ['overview', 'tasks', 'logs'].includes(item.key)))
+const visibleNavigation = computed(() => navigation.filter(item => canManage.value || ['overview', 'tasks', 'sql-date-tasks', 'logs'].includes(item.key)))
 const navigationGroups = computed(() => [
   {label: '工作台', items: visibleNavigation.value.filter(item => item.key === 'overview')},
   {label: '配置管理', items: visibleNavigation.value.filter(item => ['messages', 'file-rules', 'data-items', 'message-components'].includes(item.key))},
-  {label: '运行管理', items: visibleNavigation.value.filter(item => ['tasks', 'logs'].includes(item.key))}
+  {label: '运行管理', items: visibleNavigation.value.filter(item => ['tasks', 'sql-date-tasks', 'logs'].includes(item.key))}
 ].filter(group => group.items.length))
 watch(canManage, () => {
-  if (!canManage.value && !['overview', 'tasks', 'logs'].includes(activePage.value)) navigate('overview')
+  if (!canManage.value && !['overview', 'tasks', 'sql-date-tasks', 'logs'].includes(activePage.value)) navigate('overview')
 })
 const canCheckConnection = computed(() => hasPermission(currentUser.value, 'CONNECTION_CHECK'))
 const isAuthenticated = computed(() => isAuthenticatedUser(currentUser.value))
 const currentComponent = computed(() => ({
   overview: OverviewView,
   tasks: TaskManagementView,
+  'sql-date-tasks': SqlDateTasksView,
   messages: MessageManagementView,
   'file-rules': FileRuleTemplateView,
   'data-items': DataItemManagementView,
@@ -150,6 +153,7 @@ const pageProps = computed(() => {
     routeEdit: routeEdit.value,
     components: components.value
   }
+  if (activePage.value === 'sql-date-tasks') return {canManage: canManage.value, routeId: routeId.value, routeEdit: routeEdit.value}
   if (activePage.value === 'messages') return {
     templates: templates.value,
     sources: dataItems.value,
@@ -200,7 +204,7 @@ function showError(error) {
 }
 
 function navigate(page, filter) {
-  if (!canManage.value && !['overview', 'tasks', 'logs'].includes(page)) return
+  if (!canManage.value && !['overview', 'tasks', 'sql-date-tasks', 'logs'].includes(page)) return
   if (page === activePage.value && !routeId.value && !filter) return
   if (hasUnsavedMessageChanges.value && !window.confirm('当前表单仍有未保存修改，离开后修改将丢失。是否继续离开？')) return
   hasUnsavedMessageChanges.value = false
@@ -229,7 +233,7 @@ function syncRoute() {
     setRoute(activePage.value, routeId.value, routeEdit.value, true)
     return
   }
-  if (isAuthenticated.value && !canManage.value && !['overview', 'tasks', 'logs'].includes(route.page)) {
+  if (isAuthenticated.value && !canManage.value && !['overview', 'tasks', 'sql-date-tasks', 'logs'].includes(route.page)) {
     setRoute('overview', '', false, true)
     return
   }
